@@ -1,0 +1,11 @@
+{
+  "id": "01KN4R3FS99X8CK2G0FPK8Z3Y4",
+  "title": "Remote manager request from manual_operator",
+  "status": "planning",
+  "project_key": "remote-server-manager",
+  "active_task_id": "01KN4R3FSAS6ANSNV9VQ882JMF",
+  "created_at": "2026-04-01T14:45:33.098Z",
+  "updated_at": "2026-04-01T14:45:33.129Z",
+  "summary": "规划器暂时失败：fetch failed",
+  "version": 1
+}

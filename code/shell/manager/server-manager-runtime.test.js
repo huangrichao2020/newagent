@@ -504,7 +504,7 @@ test('handleChannelMessage learns operator feedback rules and injects them into 
     ),
     true
   )
-  assert.match(plannerCalls[0].prompt, /Operator preferences and operating rules/)
+  assert.match(plannerCalls[0].prompt, /OPERATOR RULES:/)
   assert.match(plannerCalls[0].prompt, /优先使用表情 reaction/)
   assert.ok(snapshot.timeline.some((event) => event.kind === 'feedback_memory_learned'))
   const hooks = await hookBus.listEvents({

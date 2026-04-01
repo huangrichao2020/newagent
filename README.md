@@ -102,6 +102,7 @@ newagent/
 - [roadmap.md](./docs/roadmap.md)
 - [remote-server-manager.md](./docs/remote-server-manager.md)
 - [aliyun-deploy-status.md](./docs/aliyun-deploy-status.md)
+- [prompt-contracts.md](./docs/prompt-contracts.md)
 - [prototype-m1.md](./docs/prototype-m1.md)
 - [m1-execution-plan.md](./docs/m1-execution-plan.md)
 - [m1-data-model.md](./docs/m1-data-model.md)

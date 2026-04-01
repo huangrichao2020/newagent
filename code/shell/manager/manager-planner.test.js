@@ -15,6 +15,10 @@ test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', 
     managerProfile: createRemoteServerManagerProfile()
   })
 
+  assert.match(prompt, /ROLE:/)
+  assert.match(prompt, /TASK:/)
+  assert.match(prompt, /OUTPUT CONTRACT:/)
+  assert.match(prompt, /EXECUTION PROTOCOL:/)
   assert.match(prompt, /Return JSON only/)
   assert.match(prompt, /operator_reply/)
 })
@@ -40,6 +44,8 @@ test('buildManagerPlanningPrompt includes the operator request and project inven
     projects: getAliyunSeedProjects().slice(0, 2)
   })
 
+  assert.match(prompt, /PROJECT INVENTORY:/)
+  assert.match(prompt, /OPERATOR REQUEST:/)
   assert.match(prompt, /uwillberich/)
   assert.match(prompt, /novel-evolution/)
   assert.match(prompt, /Check uwillberich publishing state/)
@@ -63,7 +69,7 @@ test('buildManagerPlanningPrompt includes operator feedback rules when available
     ]
   })
 
-  assert.match(prompt, /Operator preferences and operating rules/)
+  assert.match(prompt, /OPERATOR RULES:/)
   assert.match(prompt, /优先使用表情 reaction/)
   assert.match(prompt, /复杂问题先说明正在理解或排查/)
 })

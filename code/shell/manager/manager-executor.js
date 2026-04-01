@@ -1,5 +1,6 @@
 import { createStepExecutor } from '../executor/step-executor.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
+import { buildPromptContract } from '../prompts/prompt-contract.js'
 import { createSessionStore } from '../session/session-store.js'
 import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
 
@@ -89,24 +90,46 @@ function buildProjectSummary(project) {
 }
 
 function buildManagerExecutionSystemPrompt() {
-  return [
-    'You convert one remote server manager operate/deploy step into one executable shell command.',
-    'Return JSON only with no markdown fence and no prose outside the JSON object.',
-    'Use this schema:',
-    '{',
-    '  "cwd": "/absolute/path/for/execution",',
-    '  "command": "single shell command to run with /bin/zsh -lc",',
-    '  "summary": "short Chinese summary of what this command will do",',
-    '  "timeout_ms": 120000',
-    '}',
-    'Rules:',
-    '- command must be explicit and directly executable.',
-    '- cwd must be one provided project path when relevant.',
-    '- prefer the smallest command that advances the requested step.',
-    '- do not wrap the command in markdown fences.',
-    '- do not include destructive cleanup unless the step explicitly requires it.',
-    '- do not use interactive commands.'
-  ].join('\n')
+  return buildPromptContract({
+    sections: [
+      {
+        title: 'ROLE',
+        lines: ['Convert one remote server manager operate or deploy step into one executable shell command.']
+      },
+      {
+        title: 'TASK',
+        lines: [
+          'Generate the smallest command that safely advances the requested manager step.',
+          'Stay within the provided project paths and operating context.'
+        ]
+      },
+      {
+        title: 'OUTPUT CONTRACT',
+        bullet: false,
+        lines: [
+          'Return JSON only with no markdown fence and no prose outside the JSON object.',
+          'Use this schema:',
+          '{',
+          '  "cwd": "/absolute/path/for/execution",',
+          '  "command": "single shell command to run",',
+          '  "summary": "short Chinese summary of what this command will do",',
+          '  "timeout_ms": 120000',
+          '}'
+        ]
+      },
+      {
+        title: 'EXECUTION PROTOCOL',
+        lines: [
+          'command must be explicit and directly executable.',
+          'cwd must be one provided project path when relevant.',
+          'prefer the smallest command that advances the requested step.',
+          'do not wrap the command in markdown fences.',
+          'do not include destructive cleanup unless the step explicitly requires it.',
+          'do not use interactive commands.'
+        ]
+      }
+    ]
+  })
 }
 
 function buildManagerExecutionPrompt({
@@ -115,28 +138,47 @@ function buildManagerExecutionPrompt({
   operatorRequest,
   sessionSummary
 }) {
-  const lines = [
-    `Manager step title: ${step.title}`
+  const sections = [
+    {
+      title: 'MANAGER STEP',
+      bullet: false,
+      lines: [
+        `title: ${step.title}`,
+        step.notes ? `notes: ${step.notes}` : null
+      ]
+    }
   ]
 
-  if (step.notes) {
-    lines.push(`Manager step notes: ${step.notes}`)
-  }
-
   if (operatorRequest) {
-    lines.push(`Operator request: ${operatorRequest}`)
+    sections.push({
+      title: 'OPERATOR REQUEST',
+      bullet: false,
+      lines: [operatorRequest]
+    })
   }
 
   if (sessionSummary) {
-    lines.push(`Session summary: ${sessionSummary}`)
+    sections.push({
+      title: 'SESSION SUMMARY',
+      bullet: false,
+      lines: [sessionSummary]
+    })
   }
 
   if (project) {
-    lines.push('Target project context:')
-    lines.push(buildProjectSummary(project))
+    sections.push({
+      title: 'TARGET PROJECT CONTEXT',
+      bullet: false,
+      lines: [
+        `name: ${project.name} (${project.project_key})`,
+        buildProjectSummary(project)
+      ]
+    })
   }
 
-  return lines.join('\n')
+  return buildPromptContract({
+    sections
+  })
 }
 
 function parseManagerExecutionResponse({
@@ -177,42 +219,78 @@ function buildCodexInstruction({
   operatorRequest,
   sessionSummary
 }) {
-  const lines = []
+  const protocolLines = []
+  const responseRules = []
 
   if (mode === 'review') {
-    lines.push('Review the target workspace for this remote server manager task.')
-    lines.push('Report actionable findings first, ordered by severity.')
+    protocolLines.push('Review the target workspace for this remote server manager task.')
+    protocolLines.push('Focus on correctness, regressions, deployment risk, path drift, service health, and missing verification.')
+    responseRules.push('Report actionable findings first, ordered by severity.')
   } else {
-    lines.push('Repair the target workspace for this remote server manager task.')
-    lines.push('Apply the minimal safe fix that resolves the requested issue.')
+    protocolLines.push('Repair the target workspace for this remote server manager task.')
+    protocolLines.push('Apply the minimal safe fix that resolves the requested issue.')
+    protocolLines.push('Preserve unrelated files and keep edits scoped.')
+    responseRules.push('Leave a concise explanation of what changed and why.')
   }
 
-  lines.push(`Manager step title: ${step.title}`)
-
-  if (step.notes) {
-    lines.push(`Manager step notes: ${step.notes}`)
-  }
+  const sections = [
+    {
+      title: 'ROLE',
+      lines: [
+        mode === 'review'
+          ? 'Act as a review specialist for remote server manager tasks.'
+          : 'Act as a repair specialist for remote server manager tasks.'
+      ]
+    },
+    {
+      title: 'TASK',
+      bullet: false,
+      lines: [
+        `Manager step title: ${step.title}`,
+        step.notes ? `Manager step notes: ${step.notes}` : null
+      ]
+    }
+  ]
 
   if (operatorRequest) {
-    lines.push(`Operator request: ${operatorRequest}`)
+    sections.push({
+      title: 'OPERATOR REQUEST',
+      bullet: false,
+      lines: [operatorRequest]
+    })
   }
 
   if (sessionSummary) {
-    lines.push(`Session summary: ${sessionSummary}`)
+    sections.push({
+      title: 'SESSION SUMMARY',
+      bullet: false,
+      lines: [sessionSummary]
+    })
   }
 
   if (project) {
-    lines.push(`Target project: ${project.name} (${project.project_key})`)
-    lines.push(buildProjectSummary(project))
+    sections.push({
+      title: 'TARGET PROJECT CONTEXT',
+      bullet: false,
+      lines: [
+        `Target project: ${project.name} (${project.project_key})`,
+        buildProjectSummary(project)
+      ]
+    })
   }
 
-  if (mode === 'review') {
-    lines.push('Focus on correctness, regressions, deployment risk, path drift, service health, and missing verification.')
-  } else {
-    lines.push('Preserve unrelated files, keep edits scoped, and leave a concise explanation in the output.')
-  }
+  sections.push({
+    title: 'EXECUTION PROTOCOL',
+    lines: protocolLines
+  })
+  sections.push({
+    title: 'RESPONSE RULES',
+    lines: responseRules
+  })
 
-  return lines.join('\n')
+  return buildPromptContract({
+    sections
+  })
 }
 
 function summarizePathCheck(output) {

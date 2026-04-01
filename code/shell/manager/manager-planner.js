@@ -1,3 +1,5 @@
+import { buildPromptContract } from '../prompts/prompt-contract.js'
+
 function cleanString(value) {
   if (value === undefined || value === null) {
     return null
@@ -98,42 +100,63 @@ function normalizeSteps(rawSteps) {
 }
 
 export function buildManagerPlanningSystemPrompt({ managerProfile }) {
-  const lines = [
-    `You are ${managerProfile.role}.`,
-    'You manage remote server projects and must plan concrete next actions.',
-    'Return JSON only with no markdown fence and no prose outside the JSON object.',
-    'Use this schema:',
-    '{',
-    '  "summary": "short operational summary",',
-    '  "project_keys": ["known-project-key"],',
-    '  "operator_reply": "short Chinese reply to the operator",',
-    '  "steps": [',
-    '    {',
-    '      "title": "action title",',
-    '      "kind": "inspect|operate|deploy|review|repair|report",',
-    '      "notes": "why this step exists",',
-    '      "depends_on": [1]',
-    '    }',
-    '  ]',
-    '}',
-    'Rules:',
-    '- project_keys must only contain known project keys from the provided inventory.',
-    '- steps must be concrete and ordered.',
-    '- prefer 2 to 5 steps.',
-    '- operator_reply must be concise, in Chinese, and mention the key project names when relevant.',
-    '- When operator preferences or operating rules are provided, follow them explicitly.',
-    '- If the request is ambiguous, include an initial inspection step instead of guessing.'
+  const protocolRules = [
+    'project_keys must only contain known project keys from the provided inventory.',
+    'steps must be concrete and ordered.',
+    'prefer 2 to 5 steps.',
+    'operator_reply must be concise, in Chinese, and mention the key project names when relevant.',
+    'When operator preferences or operating rules are provided, follow them explicitly.',
+    'If the request is ambiguous, include an initial inspection step instead of guessing.'
   ]
 
   if (!managerProfile.codex_integration.allow_review) {
-    lines.push('- Do not emit review steps because Codex review is disabled in this environment.')
+    protocolRules.push('Do not emit review steps because Codex review is disabled in this environment.')
   }
 
   if (!managerProfile.codex_integration.allow_repair) {
-    lines.push('- Do not emit repair steps because Codex repair is disabled in this environment.')
+    protocolRules.push('Do not emit repair steps because Codex repair is disabled in this environment.')
   }
 
-  return lines.join('\n')
+  return buildPromptContract({
+    sections: [
+      {
+        title: 'ROLE',
+        lines: [managerProfile.role]
+      },
+      {
+        title: 'TASK',
+        lines: [
+          'Manage remote server projects and plan the next concrete actions.',
+          'Return an operational plan, not free-form commentary.'
+        ]
+      },
+      {
+        title: 'OUTPUT CONTRACT',
+        bullet: false,
+        lines: [
+          'Return JSON only with no markdown fence and no prose outside the JSON object.',
+          'Use this schema:',
+          '{',
+          '  "summary": "short operational summary",',
+          '  "project_keys": ["known-project-key"],',
+          '  "operator_reply": "short Chinese reply to the operator",',
+          '  "steps": [',
+          '    {',
+          '      "title": "action title",',
+          '      "kind": "inspect|operate|deploy|review|repair|report",',
+          '      "notes": "why this step exists",',
+          '      "depends_on": [1]',
+          '    }',
+          '  ]',
+          '}'
+        ]
+      },
+      {
+        title: 'EXECUTION PROTOCOL',
+        lines: protocolRules
+      }
+    ]
+  })
 }
 
 export function buildManagerPlanningPrompt({
@@ -157,22 +180,29 @@ export function buildManagerPlanningPrompt({
   const operatorRequest = cleanString(message.text)
     ?? JSON.stringify(message.content ?? message.raw_content ?? {})
 
-  const ruleBlock = operatorRules.length > 0
-    ? [
-        '',
-        'Operator preferences and operating rules:',
-        ...operatorRules.map((rule) => `- [${rule.kind}] ${rule.content}`)
-      ]
-    : []
+  const sections = [
+    {
+      title: 'PROJECT INVENTORY',
+      bullet: false,
+      lines: [inventory]
+    },
+    {
+      title: 'OPERATOR REQUEST',
+      bullet: false,
+      lines: [operatorRequest]
+    }
+  ]
 
-  return [
-    'Remote server project inventory:',
-    inventory,
-    '',
-    'Operator request:',
-    operatorRequest,
-    ...ruleBlock
-  ].join('\n')
+  if (operatorRules.length > 0) {
+    sections.push({
+      title: 'OPERATOR RULES',
+      lines: operatorRules.map((rule) => `[${rule.kind}] ${rule.content}`)
+    })
+  }
+
+  return buildPromptContract({
+    sections
+  })
 }
 
 export function parseManagerPlanningResponse({

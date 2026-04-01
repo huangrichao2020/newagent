@@ -1,0 +1,13 @@
+{
+  "id": "01KN4R3FSAS6ANSNV9VQ882JMF",
+  "session_id": "01KN4R3FS99X8CK2G0FPK8Z3Y4",
+  "title": "Remote manager request from manual_operator",
+  "user_request": "盘一下远程服务器上的股票项目",
+  "status": "draft",
+  "plan_step_ids": [],
+  "current_step_id": null,
+  "created_at": "2026-04-01T14:45:33.098Z",
+  "updated_at": "2026-04-01T14:45:33.098Z",
+  "result": null,
+  "version": 1
+}
