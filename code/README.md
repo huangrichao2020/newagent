@@ -143,9 +143,12 @@ npm run cli -- start \
 
 Environment loading:
 
+- exported process env always wins and is the recommended remote setup
 - `node ./bin/newagent.js ...` will auto-load `.env` from `code/.env`
 - if `code/.env` is missing, it will also try the parent project `.env`
 - `NEWAGENT_ENV_FILE=/abs/path/.env` overrides both
+- `.env` only fills missing keys and will not override already exported vars
+- remote deployment should keep real keys outside the repo and set `NEWAGENT_DISABLE_CODEX=true` by default
 - `NEWAGENT_SCRAPLING_BASE_URL=http://127.0.0.1:7771` enables the Scrapling extraction tool
 
 Scrapling worker:

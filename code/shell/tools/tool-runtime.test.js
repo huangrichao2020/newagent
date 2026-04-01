@@ -438,6 +438,62 @@ test('executeTool runs an approved dangerous tool on retry instead of requesting
   assert.equal(loaded.timeline.at(-1).kind, 'tool_completed')
 })
 
+test('executeTool can run an approved shell command through the portable shell adapter', async () => {
+  const { workspaceRoot, sessionStore, toolRuntime } = await createHarness()
+  const created = await sessionStore.createSession({
+    title: 'Approved shell command execution',
+    projectKey: 'newagent',
+    userRequest: 'Run one approved shell command'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: 'Run one approved shell command',
+        kind: 'implementation'
+      }
+    ]
+  })
+  const snapshot = await sessionStore.loadSession(created.session.id)
+
+  const firstAttempt = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    stepId: snapshot.plan_steps[0].id,
+    toolName: 'run_shell_command',
+    input: {
+      cwd: workspaceRoot,
+      command: 'pwd'
+    }
+  })
+
+  await sessionStore.resolveApproval(
+    created.session.id,
+    firstAttempt.approval.id,
+    'approved',
+    {
+      resolvedBy: 'user'
+    }
+  )
+
+  const secondAttempt = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    stepId: snapshot.plan_steps[0].id,
+    toolName: 'run_shell_command',
+    input: {
+      cwd: workspaceRoot,
+      command: 'pwd'
+    }
+  })
+
+  assert.equal(secondAttempt.status, 'ok')
+  assert.equal(secondAttempt.output.command, 'pwd')
+  assert.equal(secondAttempt.output.cwd, workspaceRoot)
+  assert.match(
+    secondAttempt.output.stdout,
+    new RegExp(workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  )
+})
+
 test('executeTool normalizes unknown-tool failures without throwing', async () => {
   const { toolRuntime } = await createHarness()
 
@@ -503,7 +559,8 @@ test('executeTool returns a structured unavailable result when Scrapling worker 
     sessionId: created.session.id,
     toolName: 'web_extract_scrapling',
     input: {
-      url: 'https://example.com'
+      url: 'https://example.com',
+      base_url: ''
     }
   })
   const hooks = await hookBus.listEvents({

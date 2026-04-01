@@ -11,6 +11,13 @@
 - 长期管理服务器上的项目、服务、发布链和异常
 - 把模型变成可靠工作系统，而不是只会聊天的终端助手
 
+当前运行约束也已经明确：
+
+- 以远端 `/root/newagent` 为主仓库和运行真相
+- GitHub 从远端仓库更新维护
+- 真实密钥只放远端 repo 外环境变量，不进 GitHub
+- 远端默认走百炼 / Qwen，`Codex` 适配保留但默认关闭
+
 ## 项目目标
 
 本项目现在要解决的是远程服务器上的真实总管问题：
@@ -61,7 +68,7 @@
 
 1. `Remote Project Registry`
 2. `Feishu Long-Connection Gateway`
-3. `Codex Review / Repair Adapter`
+3. `Review / Repair Adapter`
 
 外部参考的角色划分目前也已经比较清楚：
 
@@ -166,6 +173,7 @@ newagent/
   - 飞书主通道
   - 百炼 `codingplan` 负责规划
   - 百炼 `qwen3.5-plus` 负责执行和总结
+  - 远端默认不把 `codex` 放进主执行链
 - 已有项目注册表原型：
   - `project register`
   - `project list`
@@ -173,6 +181,7 @@ newagent/
 - 已有 `codex` 工具适配：
   - `codex_review_workspace`
   - `codex_repair_workspace`
+  - 远端默认关闭，避免国内网络环境导致执行漂移
 - 已把网页提取能力补成独立 worker 方案：
   - `web_extract_scrapling` 已有真实 `/v1/extract` worker 对接面
   - worker 可独立部署到阿里云并通过 `NEWAGENT_SCRAPLING_BASE_URL` 接回总管 runtime
@@ -194,8 +203,7 @@ newagent/
 - 已能在 runtime 内自动推进第一版 manager loop：
   - `inspect` 步骤会自动选择项目巡检工具
   - `report` 步骤会自动生成阶段汇报并写回 timeline
-  - `review` 步骤会自动调用 `codex_review_workspace`
-  - `repair` 步骤会自动进入审批，审批后可继续执行
+  - `review / repair` 适配已存在，但远端默认关闭
 - 已有可重复 safe-path demo：`npm run demo:m1`
 - 已有可重复 approval-path demo：`npm run demo:m1-approval`
 - `approve --continue` 已能在同一命令里完成审批并继续执行
@@ -211,16 +219,14 @@ newagent/
 - 新会话能接上旧任务，而不是从头再来
 - 远程服务器上的项目、服务、发布和异常都能被统一管起来
 - 飞书能成为稳定主入口
-- 总管 agent 能自主调用 `codex` 做 review 与 repair
+- 总管 agent 在需要时可接上外部 review / repair 适配
 
 ## 下一步
 
 当前推荐推进顺序：
 
-1. 用飞书真实发一条消息验证线上长连接收消息
-2. 用一次真实审批跑通 `codex repair`
-3. 把 `operate / deploy` 步骤也接入 manager loop
-4. 开始接管真实线上任务
+1. 固化远端 repo 外环境变量和远端主仓库维护流程
+2. 开始接管真实线上任务
 
 ## 当前交接
 

@@ -9,6 +9,7 @@ import {
   createManagerExecutor,
   selectManagerToolForStep
 } from './manager-executor.js'
+import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-manager-executor-'))
@@ -57,11 +58,16 @@ async function createHarness() {
     }
   ])
 
+  const managerProfile = createRemoteServerManagerProfile({
+    env: {}
+  })
+
   return {
     storageRoot,
     workspaceRoot,
     sessionStore,
     projectRegistry,
+    managerProfile,
     managerExecutor: createManagerExecutor({
       storageRoot,
       workspaceRoot,
@@ -73,7 +79,8 @@ async function createHarness() {
         async text() {
           return `health ok ${url}`
         }
-      })
+      }),
+      managerProfile
     })
   }
 }
@@ -132,7 +139,7 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
 })
 
 test('selectManagerToolForStep maps review, repair, and report steps to manager actions', async () => {
-  const { workspaceRoot } = await createHarness()
+  const { workspaceRoot, managerProfile } = await createHarness()
   const projects = [
     {
       project_key: 'uwillberich',
@@ -149,7 +156,8 @@ test('selectManagerToolForStep maps review, repair, and report steps to manager 
     projects,
     managerProjectKeys: ['uwillberich'],
     workspaceRoot,
-    operatorRequest: '检查发布链'
+    operatorRequest: '检查发布链',
+    managerProfile
   })
   const repairSelection = selectManagerToolForStep({
     step: {
@@ -159,7 +167,8 @@ test('selectManagerToolForStep maps review, repair, and report steps to manager 
     projects,
     managerProjectKeys: ['uwillberich'],
     workspaceRoot,
-    operatorRequest: '修复发布链'
+    operatorRequest: '修复发布链',
+    managerProfile
   })
   const reportSelection = selectManagerToolForStep({
     step: {
@@ -168,7 +177,8 @@ test('selectManagerToolForStep maps review, repair, and report steps to manager 
     },
     projects,
     managerProjectKeys: ['uwillberich'],
-    workspaceRoot
+    workspaceRoot,
+    managerProfile
   })
 
   assert.equal(reviewSelection.action, 'tool')
@@ -179,6 +189,84 @@ test('selectManagerToolForStep maps review, repair, and report steps to manager 
   assert.equal(repairSelection.tool_name, 'codex_repair_workspace')
   assert.equal(repairSelection.tool_input.full_auto, true)
   assert.equal(reportSelection.action, 'report')
+})
+
+test('selectManagerToolForStep defers review and repair when Codex is disabled', async () => {
+  const { workspaceRoot } = await createHarness()
+  const projects = [
+    {
+      project_key: 'uwillberich',
+      name: 'uwillberich',
+      source_root: join(workspaceRoot, 'uwillberich')
+    }
+  ]
+  const managerProfile = createRemoteServerManagerProfile({
+    env: {
+      NEWAGENT_DISABLE_CODEX: 'true'
+    }
+  })
+
+  const reviewSelection = selectManagerToolForStep({
+    step: {
+      kind: 'review',
+      title: 'Review uwillberich 发布链风险'
+    },
+    projects,
+    managerProjectKeys: ['uwillberich'],
+    workspaceRoot,
+    managerProfile
+  })
+  const repairSelection = selectManagerToolForStep({
+    step: {
+      kind: 'repair',
+      title: '修复 uwillberich 发布链'
+    },
+    projects,
+    managerProjectKeys: ['uwillberich'],
+    workspaceRoot,
+    managerProfile
+  })
+
+  assert.equal(reviewSelection.supported, false)
+  assert.match(reviewSelection.reason, /disabled/i)
+  assert.equal(repairSelection.supported, false)
+  assert.match(repairSelection.reason, /disabled/i)
+})
+
+test('selectManagerToolForStep maps operate and deploy steps to execution planning', async () => {
+  const { workspaceRoot } = await createHarness()
+  const projects = [
+    {
+      project_key: 'deploy-hub',
+      name: 'deploy-hub',
+      source_root: join(workspaceRoot, 'deploy-hub'),
+      runtime_root: join(workspaceRoot, 'deploy-runtime')
+    }
+  ]
+
+  const operateSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '重启 deploy-hub 服务'
+    },
+    projects,
+    managerProjectKeys: ['deploy-hub'],
+    workspaceRoot
+  })
+  const deploySelection = selectManagerToolForStep({
+    step: {
+      kind: 'deploy',
+      title: '发布 deploy-hub 到线上'
+    },
+    projects,
+    managerProjectKeys: ['deploy-hub'],
+    workspaceRoot
+  })
+
+  assert.equal(operateSelection.action, 'execution')
+  assert.equal(operateSelection.execution_kind, 'operate')
+  assert.equal(deploySelection.action, 'execution')
+  assert.equal(deploySelection.execution_kind, 'deploy')
 })
 
 test('executeCurrentManagerStep executes one safe inspect step and advances the session', async () => {
@@ -306,4 +394,93 @@ test('runManagerLoop pauses when a repair step requests approval', async () => {
   assert.equal(loaded.session.status, 'waiting_approval')
   assert.equal(loaded.approvals.length, 1)
   assert.equal(loaded.approvals[0].tool_name, 'codex_repair_workspace')
+})
+
+test('executeCurrentManagerStep plans one deploy command and pauses for approval', async () => {
+  const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
+  const managerExecutor = createManagerExecutor({
+    storageRoot,
+    workspaceRoot,
+    codexCommand: '/bin/echo',
+    fetchFn: async (url) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return `health ok ${url}`
+      }
+    }),
+    executionProvider: {
+      async invokeByIntent({ intent, prompt, systemPrompt }) {
+        assert.equal(intent, 'operate')
+        assert.match(systemPrompt, /one executable shell command/i)
+        assert.match(prompt, /发布 deploy-hub 到线上/)
+
+        return {
+          route: {
+            provider: 'bailian',
+            model: 'qwen3.5-plus'
+          },
+          request: {
+            base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+            model: 'qwen3.5-plus'
+          },
+          response: {
+            id: 'chatcmpl-execution',
+            model: 'qwen3.5-plus',
+            finish_reason: 'stop',
+            usage: {
+              total_tokens: 48
+            },
+            content: JSON.stringify({
+              cwd: join(workspaceRoot, 'deploy-hub'),
+              command: 'npm run deploy',
+              summary: '准备在 deploy-hub 执行发布命令',
+              timeout_ms: 180000
+            })
+          }
+        }
+      }
+    }
+  })
+  const created = await sessionStore.createSession({
+    title: 'Manager deploy approval flow',
+    projectKey: 'remote-server-manager',
+    userRequest: 'Deploy deploy-hub'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: '发布 deploy-hub 到线上',
+        kind: 'deploy'
+      }
+    ]
+  })
+  await sessionStore.appendTimelineEvent(created.session.id, {
+    kind: 'manager_plan_generated',
+    actor: 'manager:planner',
+    payload: {
+      project_keys: ['deploy-hub']
+    }
+  })
+
+  const result = await managerExecutor.executeCurrentManagerStep({
+    sessionId: created.session.id
+  })
+  const loaded = await sessionStore.loadSession(created.session.id)
+
+  assert.equal(result.status, 'waiting_approval')
+  assert.equal(result.selection.tool_name, 'run_shell_command')
+  assert.equal(result.selection.tool_input.cwd, join(workspaceRoot, 'deploy-hub'))
+  assert.equal(result.selection.tool_input.command, 'npm run deploy')
+  assert.match(result.summary, /npm run deploy/)
+  assert.equal(loaded.session.status, 'waiting_approval')
+  assert.equal(loaded.approvals.length, 1)
+  assert.equal(loaded.approvals[0].tool_name, 'run_shell_command')
+  assert.deepEqual(loaded.approvals[0].requested_input, {
+    cwd: join(workspaceRoot, 'deploy-hub'),
+    command: 'npm run deploy',
+    timeout_ms: 180000
+  })
 })

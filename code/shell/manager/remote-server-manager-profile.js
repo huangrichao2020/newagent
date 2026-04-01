@@ -1,4 +1,34 @@
-export function createRemoteServerManagerProfile() {
+function readBooleanEnv(env, name, fallback) {
+  const rawValue = env?.[name]
+
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return fallback
+  }
+
+  const normalized = String(rawValue).trim().toLowerCase()
+
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false
+  }
+
+  return fallback
+}
+
+export function createRemoteServerManagerProfile({
+  env = process.env
+} = {}) {
+  const disableCodex = readBooleanEnv(env, 'NEWAGENT_DISABLE_CODEX', false)
+  const allowReview = disableCodex
+    ? false
+    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REVIEW', true)
+  const allowRepair = disableCodex
+    ? false
+    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REPAIR', true)
+
   return {
     agent_key: 'remote-server-manager',
     role: 'Professional remote server project manager agent',
@@ -41,8 +71,8 @@ export function createRemoteServerManagerProfile() {
       }
     },
     codex_integration: {
-      allow_review: true,
-      allow_repair: true,
+      allow_review: allowReview,
+      allow_repair: allowRepair,
       review_tool_name: 'codex_review_workspace',
       repair_tool_name: 'codex_repair_workspace'
     }

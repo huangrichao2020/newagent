@@ -36,9 +36,12 @@
 
 推荐做法：
 
-- 把真实配置写到 `/root/newagent/code/.env`
-- `newagent` 会在启动时自动读取 `code/.env`
-- 如果不用默认位置，也可以设置 `NEWAGENT_ENV_FILE`
+- 远端真实 key 不要放进仓库目录
+- 推荐放到 repo 外环境变量，例如 `/root/.config/newagent/env.sh`
+- 这个文件可以保持 `.env` 风格的 `KEY=value`
+- 进程环境变量优先于 `.env`
+- `.env` 只保留给本地开发或临时调试
+- 远端默认建议设置 `NEWAGENT_DISABLE_CODEX=true`
 
 ## Install
 
@@ -48,9 +51,18 @@ rsync -az ./ /root/newagent/
 cd /root/newagent/code
 npm install
 mkdir -p /root/newagent/storage
-cp .env.example .env
 python3 -m pip install -r ./workers/scrapling_worker/requirements.txt
 ```
+
+然后在远端 repo 外准备环境变量文件：
+
+```bash
+install -d -m 700 /root/.config/newagent
+cp /root/newagent/code/.env.example /root/.config/newagent/env.sh
+chmod 600 /root/.config/newagent/env.sh
+```
+
+完成迁移后，项目目录里的 `code/.env` 可以删除，不再作为远端长期配置基线。
 
 如果目标机是 Debian / Ubuntu，可以继续执行：
 
@@ -90,6 +102,9 @@ curl -s http://127.0.0.1:7771/v1/extract \
 前台启动：
 
 ```bash
+set -a
+source /root/.config/newagent/env.sh
+set +a
 cd /root/newagent/code
 node ./bin/newagent.js manager feishu-serve --storage-root /root/newagent/storage
 ```
@@ -97,8 +112,7 @@ node ./bin/newagent.js manager feishu-serve --storage-root /root/newagent/storag
 PM2 启动：
 
 ```bash
-cd /root/newagent/code
-pm2 start pm2/ecosystem.config.cjs --only newagent-manager
+pm2 start /root/.config/newagent/start-manager.sh --name newagent-manager
 pm2 save
 ```
 
@@ -130,24 +144,25 @@ pm2 save
   - 检查源码 / runtime / publish 路径
   - 探活项目服务端点
   - 在 `report` 步骤生成阶段汇报
-  - 在 `review` 步骤调用 `codex review`
-  - 在 `repair` 步骤进入审批等待
+  - 远端默认不生成 `review / repair`
+  - 如需启用 `codex` 适配，需显式关闭 `NEWAGENT_DISABLE_CODEX`
+  - 在 `operate / deploy` 步骤调用 execution model 生成 shell 命令
+  - 生成后的命令会通过 `run_shell_command` 进入同一套审批流
 - 在 `NEWAGENT_SCRAPLING_BASE_URL` 已配置且 worker 在线时
   - `web_extract_scrapling` 会转发到 `/v1/extract`
   - 支持 `static / dynamic / stealth`
   - 支持 `text / html / markdown`
 
-还没做到的：
+当前运维约束：
 
-- `operate / deploy` 步骤的真实自动执行
-- 飞书真实消息触发后的 repair 审批闭环验收
+- 以远端 `/root/newagent` 为主仓库
+- GitHub 从远端更新维护
+- 真实 key 留在 repo 外环境变量
 
 ## Next Deployment Milestones
 
 部署后的下一步顺序建议是：
 
-1. 验证飞书长连接稳定在线
-2. 验证百炼调用真实可用
-3. 验证收到消息后自动触发规划、loop、回摘要
-4. 用一次真实审批跑通 `codex repair`
-5. 把 `operate / deploy` 步骤接入真实自动执行
+1. 固化 repo 外环境变量和 PM2 启动方式
+2. 从远端仓库提交并推送 GitHub
+3. 开始接管真实线上任务

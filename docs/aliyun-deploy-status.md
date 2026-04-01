@@ -9,6 +9,8 @@
 - 代码目录：`/root/newagent`
 - 命令目录：`/root/newagent/code`
 - 运行数据目录：`/root/newagent/storage`
+- 主仓库：`/root/newagent`
+- GitHub 更新策略：从远端仓库提交并推送
 
 已完成：
 
@@ -18,7 +20,7 @@
 - `manager intake-message` 命令可运行
 - 远端最新代码已同步
 - 远端 `npm run test:all` 已复核通过：
-  - Node 测试 `112/112`
+  - Node 测试 `119/119`
   - worker 测试 `5/5`
 - 飞书长连接加密密钥和校验 token 已纳入代码配置面
 - 百炼规划调用已改成：
@@ -28,7 +30,7 @@
 - 飞书长连接前台验证通过
 - `pm2` 常驻进程已上线：
   - 进程名：`newagent-manager`
-  - 入口：`pm2/ecosystem.config.cjs`
+  - 入口：`/root/.config/newagent/start-manager.sh`
   - 最新代码已完成重启生效并 `pm2 save`
 - 本地已补齐 Scrapling worker：
   - 路径：`code/workers/scrapling_worker/app.py`
@@ -46,6 +48,24 @@
   - `/healthz` 返回正常
   - `/v1/extract` 已对 `static / dynamic / stealth` 三种模式完成真实请求验证
   - 验证样例：`https://example.com` + `selector=h1`
+- `operate / deploy` 步骤已接入真实自动执行链：
+  - `manager step-run` 会调用 execution model 生成结构化 shell 命令
+  - 命令统一落到 `run_shell_command`
+  - 仍然走现有审批流，审批后才执行
+- 远端 `operate` 链已实际验证通过：
+  - 临时 demo 项目生成命令：`pwd && head -n 1 README.md 2>/dev/null || head -n 1 README`
+  - 审批后实际执行成功，stdout 正常回写
+- Linux shell 兼容问题已修复：
+  - `run_shell_command` 不再写死 `/bin/zsh`
+  - 当前会优先使用 `NEWAGENT_SHELL` / `SHELL`，否则回退到 `/bin/sh`
+- 远端默认执行画像已切到百炼 / Qwen：
+  - `NEWAGENT_DISABLE_CODEX=true`
+  - planner 不再为远端默认生成 `review / repair`
+  - `route resolve --intent repair` 会返回 `runtime=disabled`
+- 远端真实密钥已迁到 repo 外环境变量：
+  - 环境文件：`/root/.config/newagent/env.sh`
+  - PM2 入口：`/root/.config/newagent/start-manager.sh`
+  - 项目目录 `.env` 不再作为长期基线
 
 ## Verified Commands
 
@@ -72,8 +92,8 @@ node ./bin/newagent.js manager intake-message \
   --json
 ```
 
-当前本地代码已经支持真实百炼 key 和真实飞书长连接配置。
-后续远端只需要保持 `.env` 正确并重启常驻进程。
+当前代码已经支持“进程环境变量优先，`.env` 仅补缺省值”。
+后续远端应保持 repo 外环境变量正确并重启常驻进程。
 网页提取工具也已经接回总管 runtime，不再是待接入状态。
 
 如果先只想验证执行面，也可以在远端跑：
@@ -103,23 +123,23 @@ node ./bin/newagent.js manager loop-run --storage-root /root/newagent/storage --
 - 百炼真实规划调用
 - `manager intake-message` 已完成真实规划和首轮巡检
 - `review / report / repair` 已接入自动 manager loop
+- `operate / deploy` 已接入 manager loop，并转成审批保护下的 `run_shell_command`
 - 最新代码已同步到阿里云并完成 `pm2 restart newagent-manager`
 - `pm2 restart newagent-scrapling-worker`
 - `web_extract_scrapling` 已完成线上 worker 接入与三种模式实测
+- `operate` 步骤已在远端通过临时 demo 项目完成一次真实审批和执行
+- 飞书真实消息已验证能触发线上长连接收消息
 
 这些动作还没执行：
 
-- 用飞书真实发一条消息验证线上长连接收消息
-- 用一次真实审批跑通 `codex repair` 在线闭环
-- 把 `operate / deploy` 步骤接入真实自动执行
+- 从远端主仓库继续接管真实线上任务
 
 ## Next Step
 
-当前剩下这三件事：
+当前建议下一步：
 
-1. 用飞书真实发一条消息验证线上长连接收消息
-2. 用一次真实审批跑通 `codex repair` 在线闭环
-3. 把 `operate / deploy` 步骤接入真实自动执行
+1. 从远端仓库继续维护并推送 GitHub
+2. 开始接管真实线上任务
 
 Alibaba Cloud Linux 3 上 Scrapling worker 的已验证启动方式：
 

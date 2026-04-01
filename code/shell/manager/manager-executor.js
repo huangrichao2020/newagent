@@ -1,6 +1,43 @@
 import { createStepExecutor } from '../executor/step-executor.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createSessionStore } from '../session/session-store.js'
+import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
+
+function cleanString(value) {
+  if (value === undefined || value === null) {
+    return null
+  }
+
+  const normalized = String(value).trim()
+  return normalized === '' ? null : normalized
+}
+
+function stripCodeFence(text) {
+  const fencedMatch = String(text ?? '').match(/```(?:json)?\s*([\s\S]*?)```/iu)
+
+  if (fencedMatch) {
+    return fencedMatch[1].trim()
+  }
+
+  return String(text ?? '').trim()
+}
+
+function extractJsonObject(text) {
+  const stripped = stripCodeFence(text)
+
+  if (stripped.startsWith('{') && stripped.endsWith('}')) {
+    return stripped
+  }
+
+  const firstBrace = stripped.indexOf('{')
+  const lastBrace = stripped.lastIndexOf('}')
+
+  if (firstBrace < 0 || lastBrace < 0 || lastBrace <= firstBrace) {
+    throw new Error('Execution response did not contain a JSON object')
+  }
+
+  return stripped.slice(firstBrace, lastBrace + 1)
+}
 
 function normalizeText(value) {
   return String(value ?? '').trim().toLowerCase()
@@ -49,6 +86,82 @@ function buildProjectSummary(project) {
     `service_endpoint=${project.service_endpoint ?? 'null'}`,
     `status=${project.status}`
   ].join('\n')
+}
+
+function buildManagerExecutionSystemPrompt() {
+  return [
+    'You convert one remote server manager operate/deploy step into one executable shell command.',
+    'Return JSON only with no markdown fence and no prose outside the JSON object.',
+    'Use this schema:',
+    '{',
+    '  "cwd": "/absolute/path/for/execution",',
+    '  "command": "single shell command to run with /bin/zsh -lc",',
+    '  "summary": "short Chinese summary of what this command will do",',
+    '  "timeout_ms": 120000',
+    '}',
+    'Rules:',
+    '- command must be explicit and directly executable.',
+    '- cwd must be one provided project path when relevant.',
+    '- prefer the smallest command that advances the requested step.',
+    '- do not wrap the command in markdown fences.',
+    '- do not include destructive cleanup unless the step explicitly requires it.',
+    '- do not use interactive commands.'
+  ].join('\n')
+}
+
+function buildManagerExecutionPrompt({
+  step,
+  project,
+  operatorRequest,
+  sessionSummary
+}) {
+  const lines = [
+    `Manager step title: ${step.title}`
+  ]
+
+  if (step.notes) {
+    lines.push(`Manager step notes: ${step.notes}`)
+  }
+
+  if (operatorRequest) {
+    lines.push(`Operator request: ${operatorRequest}`)
+  }
+
+  if (sessionSummary) {
+    lines.push(`Session summary: ${sessionSummary}`)
+  }
+
+  if (project) {
+    lines.push('Target project context:')
+    lines.push(buildProjectSummary(project))
+  }
+
+  return lines.join('\n')
+}
+
+function parseManagerExecutionResponse({
+  text,
+  defaultCwd
+}) {
+  const parsed = JSON.parse(extractJsonObject(text))
+  const command = cleanString(parsed.command ?? parsed.shell_command)
+
+  if (!command) {
+    throw new Error('Execution response did not include a command')
+  }
+
+  const cwd = cleanString(parsed.cwd) ?? defaultCwd
+  const summary = cleanString(parsed.summary) ?? `已生成执行命令：${command}`
+  const timeoutMs = Number.isInteger(parsed.timeout_ms) && parsed.timeout_ms > 0
+    ? parsed.timeout_ms
+    : 120000
+
+  return {
+    cwd,
+    command,
+    summary,
+    timeout_ms: timeoutMs
+  }
 }
 
 function resolveProjectWorkspace(project, workspaceRoot) {
@@ -167,6 +280,15 @@ function summarizeSelectionOutput({ toolName, output }) {
     ].filter(Boolean).join('\n')
   }
 
+  if (toolName === 'run_shell_command') {
+    return [
+      `已在 ${output.cwd ?? 'default'} 执行 shell 命令`,
+      output.command ?? '',
+      output.stdout?.trim() ?? '',
+      output.stderr?.trim() ?? ''
+    ].filter(Boolean).join('\n')
+  }
+
   return `已执行 ${toolName}`
 }
 
@@ -176,7 +298,8 @@ export function selectManagerToolForStep({
   managerProjectKeys,
   workspaceRoot = process.cwd(),
   operatorRequest = null,
-  sessionSummary = null
+  sessionSummary = null,
+  managerProfile = createRemoteServerManagerProfile()
 }) {
   const normalizedKind = normalizeText(step.kind)
   const normalizedTitle = normalizeText(step.title)
@@ -197,11 +320,18 @@ export function selectManagerToolForStep({
   }
 
   if (normalizedKind === 'review') {
+    if (!managerProfile.codex_integration.allow_review) {
+      return {
+        supported: false,
+        reason: 'Codex review is disabled for this environment'
+      }
+    }
+
     return {
       supported: true,
       action: 'tool',
       project,
-      tool_name: 'codex_review_workspace',
+      tool_name: managerProfile.codex_integration.review_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         json: true,
@@ -217,11 +347,18 @@ export function selectManagerToolForStep({
   }
 
   if (normalizedKind === 'repair') {
+    if (!managerProfile.codex_integration.allow_repair) {
+      return {
+        supported: false,
+        reason: 'Codex repair is disabled for this environment'
+      }
+    }
+
     return {
       supported: true,
       action: 'tool',
       project,
-      tool_name: 'codex_repair_workspace',
+      tool_name: managerProfile.codex_integration.repair_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         full_auto: true,
@@ -233,6 +370,15 @@ export function selectManagerToolForStep({
           sessionSummary
         })
       }
+    }
+  }
+
+  if (normalizedKind === 'operate' || normalizedKind === 'deploy') {
+    return {
+      supported: true,
+      action: 'execution',
+      project,
+      execution_kind: normalizedKind
     }
   }
 
@@ -374,7 +520,9 @@ export function createManagerExecutor({
   storageRoot,
   workspaceRoot,
   codexCommand = 'codex',
-  fetchFn = globalThis.fetch
+  fetchFn = globalThis.fetch,
+  executionProvider = null,
+  managerProfile = createRemoteServerManagerProfile()
 }) {
   const sessionStore = createSessionStore({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
@@ -382,8 +530,68 @@ export function createManagerExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand,
-    fetchFn
+      fetchFn
   })
+
+  async function buildExecutionSelection({
+    step,
+    project,
+    operatorRequest,
+    sessionSummary
+  }) {
+    if (!project) {
+      return {
+        supported: false,
+        reason: 'Operate/deploy steps require a resolved target project'
+      }
+    }
+
+    if (!executionProvider || typeof executionProvider.invokeByIntent !== 'function') {
+      return {
+        supported: false,
+        reason: 'Operate/deploy steps require an execution provider'
+      }
+    }
+
+    const defaultCwd = resolveProjectWorkspace(project, workspaceRoot)
+    const providerResult = await executionProvider.invokeByIntent({
+      intent: 'operate',
+      systemPrompt: buildManagerExecutionSystemPrompt(),
+      prompt: buildManagerExecutionPrompt({
+        step,
+        project,
+        operatorRequest,
+        sessionSummary
+      })
+    })
+    const executionPlan = parseManagerExecutionResponse({
+      text: providerResult.response.content ?? '',
+      defaultCwd
+    })
+
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'run_shell_command',
+      tool_input: {
+        cwd: executionPlan.cwd,
+        command: executionPlan.command,
+        timeout_ms: executionPlan.timeout_ms
+      },
+      summary: executionPlan.summary,
+      provider_result: {
+        route: providerResult.route,
+        request: providerResult.request,
+        response: {
+          id: providerResult.response.id,
+          model: providerResult.response.model,
+          finish_reason: providerResult.response.finish_reason,
+          usage: providerResult.response.usage
+        }
+      }
+    }
+  }
 
   async function executeManagerReportStep({
     sessionId,
@@ -447,14 +655,25 @@ export function createManagerExecutor({
 
     const projects = await projectRegistry.listProjects()
     const managerProjectKeys = latestManagerProjectKeys(snapshot)
-    const selection = selectManagerToolForStep({
+    const initialSelection = selectManagerToolForStep({
       step,
       projects,
       managerProjectKeys,
       workspaceRoot,
       operatorRequest: currentInput ?? snapshot.task.user_request,
-      sessionSummary: snapshot.session.summary
+      sessionSummary: snapshot.session.summary,
+      managerProfile
     })
+    let selection = initialSelection
+
+    if (selection.action === 'execution') {
+      selection = await buildExecutionSelection({
+        step,
+        project: selection.project,
+        operatorRequest: currentInput ?? snapshot.task.user_request,
+        sessionSummary: snapshot.session.summary
+      })
+    }
 
     if (!selection.supported) {
       await sessionStore.appendTimelineEvent(sessionId, {
@@ -468,7 +687,8 @@ export function createManagerExecutor({
 
       return {
         status: 'deferred',
-        selection
+        selection,
+        summary: selection.reason
       }
     }
 
@@ -492,7 +712,9 @@ export function createManagerExecutor({
       kind: 'manager_tool_selected',
       actor: 'manager:executor',
       payload: {
-        tool_name: selection.tool_name
+        tool_name: selection.tool_name,
+        command: selection.tool_input?.command ?? null,
+        cwd: selection.tool_input?.cwd ?? null
       }
     })
 
@@ -534,7 +756,10 @@ export function createManagerExecutor({
         status: execution.status,
         selection,
         summary: approval
-          ? `当前步骤等待审批：${approval.tool_name}`
+          ? [
+              `当前步骤等待审批：${approval.tool_name}`,
+              selection.tool_input?.command ?? null
+            ].filter(Boolean).join('\n')
           : '当前步骤等待审批',
         execution
       }

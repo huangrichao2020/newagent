@@ -62,7 +62,9 @@ test('seedProjects writes the aliyun server baseline and listProjects can filter
 })
 
 test('remote manager profile pins the intended channels and model routing', async () => {
-  const profile = createRemoteServerManagerProfile()
+  const profile = createRemoteServerManagerProfile({
+    env: {}
+  })
 
   assert.equal(profile.channels.primary.type, 'feishu')
   assert.equal(profile.channels.primary.connection_mode, 'long_connection')
@@ -72,4 +74,15 @@ test('remote manager profile pins the intended channels and model routing', asyn
   assert.equal(profile.model_routing.execution.model, 'qwen3.5-plus')
   assert.equal(profile.codex_integration.allow_review, true)
   assert.equal(profile.codex_integration.allow_repair, true)
+})
+
+test('remote manager profile can disable Codex integration through env flags', async () => {
+  const profile = createRemoteServerManagerProfile({
+    env: {
+      NEWAGENT_DISABLE_CODEX: 'true'
+    }
+  })
+
+  assert.equal(profile.codex_integration.allow_review, false)
+  assert.equal(profile.codex_integration.allow_repair, false)
 })

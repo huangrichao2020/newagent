@@ -98,7 +98,9 @@ export function createServerManagerRuntime({
   const managerExecutor = createManagerExecutor({
     storageRoot,
     workspaceRoot,
-    fetchFn
+    fetchFn,
+    executionProvider: bailianProvider,
+    managerProfile
   })
 
   async function bootstrapServerBaseline({
@@ -886,6 +888,17 @@ export function createServerManagerRuntime({
                   tool_name: pendingApproval?.tool_name ?? null
                 }
               })
+            }
+
+            if (execution?.status === 'deferred') {
+              const deferredSummary = execution.runs
+                .map((run) => run.summary ?? run.selection?.reason ?? null)
+                .filter(Boolean)
+                .at(-1)
+
+              if (deferredSummary) {
+                ackText = `${ackText}\n已暂缓：${deferredSummary}`
+              }
             }
           }
         } catch (error) {

@@ -178,9 +178,12 @@ export async function executeCli({
     const hookBus = createHookBus({ storageRoot })
     const debugRuntime = createDebugRuntime({ storageRoot })
     const projectRegistry = createProjectRegistry({ storageRoot })
-    const modelRouter = createModelRouter()
+    const managerProfile =
+      dependencies.managerProfile ?? createRemoteServerManagerProfile()
+    const modelRouter =
+      dependencies.modelRouter ?? createModelRouter({ managerProfile })
     const bailianProvider =
-      dependencies.bailianProvider ?? createBailianProvider({ modelRouter })
+      dependencies.bailianProvider ?? createBailianProvider({ managerProfile, modelRouter })
     const feishuGatewayFactory =
       dependencies.feishuGatewayFactory ?? (() => createFeishuGateway())
     const managerFetchFn = dependencies.fetchFn ?? globalThis.fetch
@@ -190,12 +193,10 @@ export async function executeCli({
     }
 
     if (command === 'profile show') {
-      const profile = createRemoteServerManagerProfile()
-
       return {
         exitCode: 0,
         stdout: formatOutput(command, {
-          profile
+          profile: managerProfile
         }, asJson),
         stderr
       }
@@ -337,7 +338,8 @@ export async function executeCli({
       const runtime = createServerManagerRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
-        bailianProvider
+        bailianProvider,
+        managerProfile
       })
       const result = await runtime.bootstrapServerBaseline()
 
@@ -354,7 +356,8 @@ export async function executeCli({
       const runtime = createServerManagerRuntime({
         storageRoot,
         feishuGateway,
-        bailianProvider
+        bailianProvider,
+        managerProfile
       })
       const started = await runtime.startFeishuLoop()
 
@@ -385,7 +388,8 @@ export async function executeCli({
       const runtime = createServerManagerRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
-        bailianProvider
+        bailianProvider,
+        managerProfile
       })
       const result = await runtime.handleChannelMessage({
         channel: options.channel ?? 'manual',
@@ -413,7 +417,9 @@ export async function executeCli({
       const managerExecutor = createManagerExecutor({
         storageRoot,
         workspaceRoot: options['workspace-root'] ?? process.cwd(),
-        fetchFn: managerFetchFn
+        fetchFn: managerFetchFn,
+        executionProvider: bailianProvider,
+        managerProfile
       })
       const result = await managerExecutor.executeCurrentManagerStep({
         sessionId,
@@ -440,7 +446,9 @@ export async function executeCli({
       const managerExecutor = createManagerExecutor({
         storageRoot,
         workspaceRoot: options['workspace-root'] ?? process.cwd(),
-        fetchFn: managerFetchFn
+        fetchFn: managerFetchFn,
+        executionProvider: bailianProvider,
+        managerProfile
       })
       const result = await managerExecutor.runManagerLoop({
         sessionId,

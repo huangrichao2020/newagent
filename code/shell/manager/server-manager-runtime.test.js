@@ -8,6 +8,7 @@ import { createSessionStore } from '../session/session-store.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createMemoryStore } from '../memory/memory-store.js'
 import { createHookBus } from '../hooks/hook-bus.js'
+import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-'))
@@ -15,6 +16,9 @@ async function createHarness() {
   const workspaceRoot = join(root, 'workspace')
   const replies = []
   const plannerCalls = []
+  const managerProfile = createRemoteServerManagerProfile({
+    env: {}
+  })
   const feishuGateway = {
     startOptions: null,
     async addMessageReaction(payload) {
@@ -46,6 +50,7 @@ async function createHarness() {
     runtime: createServerManagerRuntime({
       storageRoot,
       workspaceRoot,
+      managerProfile,
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
@@ -164,6 +169,9 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
   const runtime = createServerManagerRuntime({
     storageRoot,
     workspaceRoot: join(root, 'workspace'),
+    managerProfile: createRemoteServerManagerProfile({
+      env: {}
+    }),
     feishuGateway: {
       async addMessageReaction(payload) {
         replies.push(payload)

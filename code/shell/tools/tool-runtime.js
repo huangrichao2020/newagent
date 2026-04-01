@@ -183,13 +183,23 @@ function createDefaultSpecs(workspaceRoot) {
           throw new Error('Missing required tool input: command')
         }
 
-        const { stdout, stderr } = await execFileAsync('/bin/zsh', ['-lc', input.command], {
-          cwd: input.cwd ? normalizePath(workspaceRoot, input.cwd) : workspaceRoot,
+        const shell = String(
+          input.shell
+          ?? process.env.NEWAGENT_SHELL
+          ?? process.env.SHELL
+          ?? '/bin/sh'
+        ).trim() || '/bin/sh'
+        const cwd = input.cwd ? normalizePath(workspaceRoot, input.cwd) : workspaceRoot
+        const { stdout, stderr } = await execFileAsync(shell, ['-c', input.command], {
+          cwd,
           timeout: Number.isInteger(input.timeout_ms) ? input.timeout_ms : 10000,
           maxBuffer: 1024 * 1024
         })
 
         return {
+          shell,
+          command: String(input.command),
+          cwd,
           stdout,
           stderr
         }

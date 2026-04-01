@@ -19,6 +19,19 @@ test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', 
   assert.match(prompt, /operator_reply/)
 })
 
+test('buildManagerPlanningSystemPrompt warns when Codex review and repair are disabled', () => {
+  const prompt = buildManagerPlanningSystemPrompt({
+    managerProfile: createRemoteServerManagerProfile({
+      env: {
+        NEWAGENT_DISABLE_CODEX: 'true'
+      }
+    })
+  })
+
+  assert.match(prompt, /Do not emit review steps/)
+  assert.match(prompt, /Do not emit repair steps/)
+})
+
 test('buildManagerPlanningPrompt includes the operator request and project inventory', () => {
   const prompt = buildManagerPlanningPrompt({
     message: {

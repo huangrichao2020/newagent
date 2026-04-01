@@ -4,8 +4,11 @@ references/
 code/node_modules/
 code/storage/
 code/.env
+code/pm2/*.ecosystem.cjs
+storage/
 
 __pycache__/
 *.pyc
 
 .DS_Store
+._*

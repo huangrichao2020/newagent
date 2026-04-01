@@ -98,7 +98,7 @@ function normalizeSteps(rawSteps) {
 }
 
 export function buildManagerPlanningSystemPrompt({ managerProfile }) {
-  return [
+  const lines = [
     `You are ${managerProfile.role}.`,
     'You manage remote server projects and must plan concrete next actions.',
     'Return JSON only with no markdown fence and no prose outside the JSON object.',
@@ -123,7 +123,17 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     '- operator_reply must be concise, in Chinese, and mention the key project names when relevant.',
     '- When operator preferences or operating rules are provided, follow them explicitly.',
     '- If the request is ambiguous, include an initial inspection step instead of guessing.'
-  ].join('\n')
+  ]
+
+  if (!managerProfile.codex_integration.allow_review) {
+    lines.push('- Do not emit review steps because Codex review is disabled in this environment.')
+  }
+
+  if (!managerProfile.codex_integration.allow_repair) {
+    lines.push('- Do not emit repair steps because Codex repair is disabled in this environment.')
+  }
+
+  return lines.join('\n')
 }
 
 export function buildManagerPlanningPrompt({

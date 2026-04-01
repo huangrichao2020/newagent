@@ -31,6 +31,15 @@ export function createModelRouter({ managerProfile = createRemoteServerManagerPr
     }
 
     if (routeKey === 'review') {
+      if (!managerProfile.codex_integration.allow_review) {
+        return {
+          intent: normalizedIntent,
+          route_key: routeKey,
+          runtime: 'disabled',
+          reason: 'Codex review is disabled for this environment'
+        }
+      }
+
       return {
         intent: normalizedIntent,
         route_key: routeKey,
@@ -40,6 +49,15 @@ export function createModelRouter({ managerProfile = createRemoteServerManagerPr
     }
 
     if (routeKey === 'repair') {
+      if (!managerProfile.codex_integration.allow_repair) {
+        return {
+          intent: normalizedIntent,
+          route_key: routeKey,
+          runtime: 'disabled',
+          reason: 'Codex repair is disabled for this environment'
+        }
+      }
+
       return {
         intent: normalizedIntent,
         route_key: routeKey,
