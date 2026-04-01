@@ -1,0 +1,11 @@
+.workbook/
+references/
+
+code/node_modules/
+code/storage/
+code/.env
+
+__pycache__/
+*.pyc
+
+.DS_Store

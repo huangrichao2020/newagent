@@ -1,0 +1,5 @@
+# After installing these packages, run `scrapling install`
+# to provision the browser/runtime dependencies used by
+# dynamic and stealth fetchers.
+scrapling[fetchers]>=0.3.13,<0.4
+markdownify>=0.13,<1

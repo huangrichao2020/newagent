@@ -1,0 +1,23 @@
+{
+  "name": "newagent-m1-kernel",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "newagent": "./bin/newagent.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:workers": "python3 -m unittest discover -s ./workers/scrapling_worker/tests -v",
+    "test:all": "npm run test && npm run test:workers",
+    "cli": "node ./bin/newagent.js",
+    "manager:bootstrap": "node ./bin/newagent.js manager bootstrap --storage-root ./storage --json",
+    "manager:intake": "node ./bin/newagent.js manager intake-message --storage-root ./storage --text \"检查远程项目当前状态\" --json",
+    "manager:serve": "node ./bin/newagent.js manager feishu-serve --storage-root ./storage",
+    "worker:scrapling": "python3 ./workers/scrapling_worker/app.py --host 127.0.0.1 --port 7771",
+    "demo:m1": "node ./demo/m1-demo.mjs",
+    "demo:m1-approval": "node ./demo/m1-approval-demo.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.60.0"
+  }
+}
