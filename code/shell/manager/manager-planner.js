@@ -106,6 +106,7 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     'prefer 2 to 5 steps.',
     'operator_reply must be concise, in Chinese, and mention the key project names when relevant.',
     'When operator preferences or operating rules are provided, follow them explicitly.',
+    'When recent transcript or long-term memory is provided, preserve continuity with prior turns.',
     'If the request is ambiguous, include an initial inspection step instead of guessing.'
   ]
 
@@ -162,7 +163,10 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
 export function buildManagerPlanningPrompt({
   message,
   projects,
-  operatorRules = []
+  operatorRules = [],
+  sessionSummary = null,
+  longTermMemory = [],
+  recentTranscript = []
 }) {
   const inventory = projects
     .map((project) => [
@@ -192,6 +196,28 @@ export function buildManagerPlanningPrompt({
       lines: [operatorRequest]
     }
   ]
+
+  if (sessionSummary) {
+    sections.push({
+      title: 'SESSION STATE',
+      bullet: false,
+      lines: [sessionSummary]
+    })
+  }
+
+  if (longTermMemory.length > 0) {
+    sections.push({
+      title: 'LONG-TERM MEMORY',
+      lines: longTermMemory
+    })
+  }
+
+  if (recentTranscript.length > 0) {
+    sections.push({
+      title: 'RECENT TRANSCRIPT',
+      lines: recentTranscript
+    })
+  }
 
   if (operatorRules.length > 0) {
     sections.push({

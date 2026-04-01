@@ -196,10 +196,12 @@ newagent/
   - `manager intake-message`
 - 已能走第一版总管 intake 闭环：
   - 飞书/手工消息进入
-  - 自动创建总管会话
+  - 飞书通道固定复用一个统一总管会话
   - 自动载入远端 6 项目基线
   - 自动调用 `codingplan` 生成步骤
   - 自动把摘要和计划写入 timeline
+  - 自动把最近对话和长期压缩记忆注入 planner
+  - 飞书统一会话每 5 小时自动压缩一次上下文
   - 自动回一版中文确认摘要
 - 已能在 runtime 内自动推进第一版 manager loop：
   - `inspect` 步骤会自动选择项目巡检工具

@@ -10,12 +10,16 @@ import { createMemoryStore } from '../memory/memory-store.js'
 import { createHookBus } from '../hooks/hook-bus.js'
 import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
 
-async function createHarness() {
+async function createHarness({
+  nowFn = Date.now
+} = {}) {
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-'))
   const storageRoot = join(root, 'storage')
   const workspaceRoot = join(root, 'workspace')
   const replies = []
   const plannerCalls = []
+  const summaryCalls = []
+  const providerCalls = []
   const managerProfile = createRemoteServerManagerProfile({
     env: {}
   })
@@ -46,11 +50,14 @@ async function createHarness() {
     workspaceRoot,
     replies,
     plannerCalls,
+    summaryCalls,
+    providerCalls,
     feishuGateway,
     runtime: createServerManagerRuntime({
       storageRoot,
       workspaceRoot,
       managerProfile,
+      nowFn,
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
@@ -62,6 +69,43 @@ async function createHarness() {
       feishuGateway,
       bailianProvider: {
         async invokeByIntent(input) {
+          providerCalls.push(input)
+
+          if (input.intent === 'summarize') {
+            summaryCalls.push(input)
+
+            return {
+              route: {
+                provider: 'bailian',
+                model: 'qwen3.5-plus'
+              },
+              request: {
+                base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+                model: 'qwen3.5-plus'
+              },
+              response: {
+                id: 'chatcmpl-manager-summary',
+                model: 'qwen3.5-plus',
+                finish_reason: 'stop',
+                usage: {
+                  total_tokens: 96
+                },
+                content: JSON.stringify({
+                  summary: '累计来看，当前主要在跟进 uwillberich 与 deploy-hub 的排查结果。',
+                  facts: [
+                    'uwillberich 和 deploy-hub 是最近几轮关注的重点项目。'
+                  ],
+                  open_loops: [
+                    '继续跟进上一轮尚未收敛的排查结论。'
+                  ],
+                  preferences: [
+                    '先快速确认收到，再给处理结论。'
+                  ]
+                })
+              }
+            }
+          }
+
           plannerCalls.push(input)
 
           return {
@@ -160,6 +204,90 @@ test('handleChannelMessage creates a manager session and replies through Feishu'
   assert.ok(hooks.some((event) => event.name === 'manager.planning.completed'))
   assert.ok(hooks.some((event) => event.name === 'manager.loop.completed'))
   assert.ok(hooks.some((event) => event.name === 'channel.reply.sent'))
+})
+
+test('handleChannelMessage reuses one unified Feishu session and injects prior transcript into planning', async () => {
+  const { runtime, sessionStore, plannerCalls } = await createHarness()
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_unified_1',
+      chat_id: 'oc_unified',
+      sender_open_id: 'ou_unified',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_unified_2',
+      chat_id: 'oc_unified',
+      sender_open_id: 'ou_unified',
+      text: '继续刚才那个问题，别重新开新会话'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(second.session_id)
+
+  assert.equal(second.session_id, first.session_id)
+  assert.match(second.ack_text, /继续沿用总管会话/)
+  assert.equal(snapshot.task.user_request, '继续刚才那个问题，别重新开新会话')
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'session_turn_started'))
+  assert.equal(plannerCalls.length, 2)
+  assert.match(plannerCalls[1].prompt, /RECENT TRANSCRIPT:/)
+  assert.match(plannerCalls[1].prompt, /先看看 deploy-hub 最近有没有异常/)
+})
+
+test('handleChannelMessage compacts Feishu context after the five-hour interval and stores long-term memory', async () => {
+  let currentTime = Date.now()
+  const { runtime, sessionStore, memoryStore, summaryCalls, plannerCalls, hookBus } = await createHarness({
+    nowFn: () => currentTime
+  })
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_compact_1',
+      chat_id: 'oc_compact',
+      sender_open_id: 'ou_compact',
+      text: '先排查一下 deploy-hub 和 uwillberich'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  currentTime += 6 * 60 * 60 * 1000
+
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_compact_2',
+      chat_id: 'oc_compact',
+      sender_open_id: 'ou_compact',
+      text: '五小时过去了，继续刚才那个排查'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(second.session_id)
+  const compactedEntries = await memoryStore.searchMemoryEntries({
+    sessionId: second.session_id,
+    scope: 'session',
+    tag: 'context_compaction'
+  })
+  const hooks = await hookBus.listEvents({
+    sessionId: second.session_id,
+    name: 'manager.context.compacted'
+  })
+
+  assert.equal(summaryCalls.length, 1)
+  assert.equal(compactedEntries.length, 1)
+  assert.match(compactedEntries[0].content, /摘要：累计来看/)
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'conversation_compacted'))
+  assert.equal(hooks.length, 1)
+  assert.match(summaryCalls[0].prompt, /NEW TRANSCRIPT TO MERGE:/)
+  assert.match(summaryCalls[0].prompt, /先排查一下 deploy-hub 和 uwillberich/)
+  assert.match(plannerCalls[1].prompt, /LONG-TERM MEMORY:/)
+  assert.match(plannerCalls[1].prompt, /累计来看/)
 })
 
 test('handleChannelMessage surfaces approval pause when repair enters the loop', async () => {

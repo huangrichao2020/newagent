@@ -74,6 +74,29 @@ test('buildManagerPlanningPrompt includes operator feedback rules when available
   assert.match(prompt, /复杂问题先说明正在理解或排查/)
 })
 
+test('buildManagerPlanningPrompt includes session continuity context when available', () => {
+  const prompt = buildManagerPlanningPrompt({
+    message: {
+      text: '继续刚才那个 deploy 异常'
+    },
+    projects: getAliyunSeedProjects().slice(0, 1),
+    sessionSummary: '上一个 turn 已确认 deploy-hub 正常，问题集中在 uwillberich 发布目录。',
+    longTermMemory: [
+      '累计摘要：用户偏好先短回执，再给执行结论。',
+      '未完成事项：需要继续跟进 uwillberich 发布链。'
+    ],
+    recentTranscript: [
+      'operator: 先看看 deploy-hub 有没有挂。',
+      'assistant: deploy-hub 正常，接下来继续查 uwillberich。'
+    ]
+  })
+
+  assert.match(prompt, /SESSION STATE:/)
+  assert.match(prompt, /LONG-TERM MEMORY:/)
+  assert.match(prompt, /RECENT TRANSCRIPT:/)
+  assert.match(prompt, /继续查 uwillberich/)
+})
+
 test('parseManagerPlanningResponse normalizes a fenced JSON plan', () => {
   const plan = parseManagerPlanningResponse({
     text: [

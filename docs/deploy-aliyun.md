@@ -132,7 +132,9 @@ pm2 save
 - 使用飞书长连接的加密密钥和校验 token
 - 自动加载远端 6 个项目基线
 - 接住飞书消息
-- 为每条飞书消息创建一个总管会话
+- 飞书通道固定复用一个统一总管会话
+- 自动把最近几轮 transcript 和长期压缩记忆带进 planner
+- 飞书统一会话每 5 小时自动压缩一次上下文
 - 自动调用百炼 Coding Plan 通道上的 `qwen3.5-plus`
   - 规划语义仍然标记为 `codingplan`
   - 请求体会附带 `extra_body.enable_thinking=true`

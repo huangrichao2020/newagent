@@ -183,6 +183,112 @@ export function createSessionStore({ storageRoot }) {
     }
   }
 
+  async function startNextTurn(sessionId, {
+    title,
+    userRequest,
+    summary = undefined,
+    startedAt = nowIso()
+  }) {
+    const snapshot = await loadSession(sessionId)
+    const paths = createPaths(storageRoot, sessionId)
+    const nextTaskId = createUlid()
+    const nextSession = {
+      ...snapshot.session,
+      title,
+      status: 'planning',
+      active_task_id: nextTaskId,
+      updated_at: startedAt,
+      summary: summary === undefined ? snapshot.session.summary : summary
+    }
+    const nextTask = {
+      id: nextTaskId,
+      session_id: sessionId,
+      title,
+      user_request: userRequest,
+      status: 'draft',
+      plan_step_ids: [],
+      current_step_id: null,
+      created_at: startedAt,
+      updated_at: startedAt,
+      result: null,
+      version: 1
+    }
+    const nextPlanSteps = []
+    const nextApprovals = []
+
+    await writeSessionSnapshot(paths, {
+      session: nextSession,
+      task: nextTask,
+      plan_steps: nextPlanSteps,
+      approvals: nextApprovals
+    })
+
+    const events = []
+
+    if (snapshot.session.status !== nextSession.status) {
+      events.push(
+        createTimelineEvent({
+          sessionId,
+          taskId: snapshot.task.id,
+          kind: 'state_changed',
+          payload: {
+            entity: 'session',
+            from: snapshot.session.status,
+            to: nextSession.status
+          },
+          at: startedAt
+        })
+      )
+    }
+
+    events.push(
+      createTimelineEvent({
+        sessionId,
+        taskId: nextTaskId,
+        kind: 'session_turn_started',
+        payload: {
+          previous_task_id: snapshot.task.id,
+          next_task_id: nextTaskId,
+          title
+        },
+        at: startedAt
+      })
+    )
+    events.push(
+      createTimelineEvent({
+        sessionId,
+        taskId: nextTaskId,
+        kind: 'task_created',
+        payload: {
+          title
+        },
+        at: startedAt
+      })
+    )
+    events.push(
+      createTimelineEvent({
+        sessionId,
+        taskId: nextTaskId,
+        kind: 'user_message_added',
+        actor: 'user',
+        payload: {
+          content: userRequest
+        },
+        at: startedAt
+      })
+    )
+
+    await appendTimelineEvents(paths, events)
+
+    return {
+      session: nextSession,
+      task: nextTask,
+      plan_steps: nextPlanSteps,
+      approvals: nextApprovals,
+      timeline_events: events
+    }
+  }
+
   async function loadSession(sessionId) {
     const paths = createPaths(storageRoot, sessionId)
 
@@ -1105,6 +1211,7 @@ export function createSessionStore({ storageRoot }) {
 
   return {
     createSession,
+    startNextTurn,
     createPlan,
     loadSession,
     appendTimelineEvent,

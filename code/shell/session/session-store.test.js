@@ -62,6 +62,48 @@ test('loadSession returns persisted current state and timeline', async () => {
   assert.equal(loaded.timeline.length, 3)
 })
 
+test('startNextTurn keeps the same session and rotates the active task state', async () => {
+  const { store } = await createTestStore()
+  const created = await store.createSession({
+    title: 'Original request',
+    projectKey: 'newagent',
+    userRequest: 'Handle the first operator request'
+  })
+
+  await store.createPlan(created.session.id, {
+    steps: [
+      {
+        title: 'Inspect the current state',
+        kind: 'research'
+      }
+    ]
+  })
+  await store.requestApproval(created.session.id, {
+    stepId: (await store.loadSession(created.session.id)).plan_steps[0].id,
+    toolName: 'write_file',
+    permissionClass: 'dangerous',
+    reason: 'Would modify tracked state'
+  })
+
+  const nextTurn = await store.startNextTurn(created.session.id, {
+    title: 'Follow-up request',
+    userRequest: 'Continue in the same session with new context'
+  })
+  const loaded = await store.loadSession(created.session.id)
+
+  assert.equal(nextTurn.session.id, created.session.id)
+  assert.notEqual(nextTurn.task.id, created.task.id)
+  assert.equal(loaded.session.active_task_id, nextTurn.task.id)
+  assert.equal(loaded.session.status, 'planning')
+  assert.equal(loaded.task.status, 'draft')
+  assert.equal(loaded.task.user_request, 'Continue in the same session with new context')
+  assert.deepEqual(loaded.plan_steps, [])
+  assert.deepEqual(loaded.approvals, [])
+  assert.ok(loaded.timeline.some((event) => event.kind === 'session_turn_started'))
+  assert.equal(loaded.timeline.at(-2).kind, 'task_created')
+  assert.equal(loaded.timeline.at(-1).kind, 'user_message_added')
+})
+
 test('updateSessionStatus rewrites current state and emits a timeline event', async () => {
   const { store } = await createTestStore()
   const created = await store.createSession({
