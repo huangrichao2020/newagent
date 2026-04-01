@@ -7,6 +7,7 @@ code/.env
 code/pm2/*.ecosystem.cjs
 storage/
 !code/storage/
+code/storage/*
 !code/storage/*.js
 
 __pycache__/
