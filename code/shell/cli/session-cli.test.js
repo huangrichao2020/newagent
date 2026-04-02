@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { executeCli } from './session-cli.js'
 import { createSessionStore } from '../session/session-store.js'
+import { createCoworkerStore } from '../coworkers/coworker-store.js'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createHookBus } from '../hooks/hook-bus.js'
 import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
@@ -265,6 +266,117 @@ test('channel feishu-send calls the injected Feishu gateway', async () => {
   assert.equal(result.exitCode, 0)
   assert.equal(sent.length, 1)
   assert.equal(sent[0].receiveId, 'oc_123')
+})
+
+test('channel feishu-user-auth-url returns one OAuth authorize URL', async () => {
+  const originalAppId = process.env.NEWAGENT_FEISHU_APP_ID
+  const originalAppSecret = process.env.NEWAGENT_FEISHU_APP_SECRET
+  const originalRedirectUri = process.env.NEWAGENT_FEISHU_OAUTH_REDIRECT_URI
+  process.env.NEWAGENT_FEISHU_APP_ID = 'cli_app_123'
+  process.env.NEWAGENT_FEISHU_APP_SECRET = 'cli_secret_123'
+  process.env.NEWAGENT_FEISHU_OAUTH_REDIRECT_URI = 'https://example.com/feishu/callback'
+
+  try {
+    const result = await executeCli({
+      argv: ['channel', 'feishu-user-auth-url', '--state', 'state_123', '--json']
+    })
+
+    assert.equal(result.exitCode, 0)
+    const payload = JSON.parse(result.stdout)
+    assert.equal(payload.command, 'channel feishu-user-auth-url')
+    assert.equal(payload.oauth.state, 'state_123')
+    assert.match(payload.oauth.authorize_url, /app_id=cli_app_123/)
+    assert.match(payload.oauth.authorize_url, /redirect_uri=https%3A%2F%2Fexample.com%2Ffeishu%2Fcallback/)
+  } finally {
+    if (originalAppId === undefined) {
+      delete process.env.NEWAGENT_FEISHU_APP_ID
+    } else {
+      process.env.NEWAGENT_FEISHU_APP_ID = originalAppId
+    }
+
+    if (originalAppSecret === undefined) {
+      delete process.env.NEWAGENT_FEISHU_APP_SECRET
+    } else {
+      process.env.NEWAGENT_FEISHU_APP_SECRET = originalAppSecret
+    }
+
+    if (originalRedirectUri === undefined) {
+      delete process.env.NEWAGENT_FEISHU_OAUTH_REDIRECT_URI
+    } else {
+      process.env.NEWAGENT_FEISHU_OAUTH_REDIRECT_URI = originalRedirectUri
+    }
+  }
+})
+
+test('channel feishu-user-auth-status and exchange delegate to the auth manager', async () => {
+  const calls = []
+  const authManager = {
+    async describeStatus() {
+      calls.push('status')
+      return {
+        oauth_ready: true,
+        auth_mode: 'user_preferred',
+        user_bound: true,
+        active_identity: 'user',
+        user: {
+          name: 'Tingchi'
+        }
+      }
+    },
+    buildAuthorizeUrl() {
+      calls.push('url')
+      return {
+        authorize_url: 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?app_id=cli',
+        state: 'state_123'
+      }
+    },
+    async exchangeCode({ code }) {
+      calls.push(`exchange:${code}`)
+      return {
+        user_bound: true,
+        active_identity: 'user'
+      }
+    },
+    async refreshAccessToken() {
+      calls.push('refresh')
+      return {
+        access_token: 'masked_access_token',
+        refresh_token: 'masked_refresh_token',
+        user_bound: true,
+        active_identity: 'user'
+      }
+    }
+  }
+
+  const statusResult = await executeCli({
+    argv: ['channel', 'feishu-user-auth-status', '--json'],
+    dependencies: {
+      feishuUserAuthManager: authManager
+    }
+  })
+  const exchangeResult = await executeCli({
+    argv: ['channel', 'feishu-user-auth-exchange', '--code', 'code_123', '--json'],
+    dependencies: {
+      feishuUserAuthManager: authManager
+    }
+  })
+  const refreshResult = await executeCli({
+    argv: ['channel', 'feishu-user-auth-refresh', '--json'],
+    dependencies: {
+      feishuUserAuthManager: authManager
+    }
+  })
+
+  assert.equal(statusResult.exitCode, 0)
+  assert.equal(exchangeResult.exitCode, 0)
+  assert.equal(refreshResult.exitCode, 0)
+  assert.deepEqual(calls, ['status', 'exchange:code_123', 'refresh'])
+
+  const refreshPayload = JSON.parse(refreshResult.stdout)
+  assert.equal(refreshPayload.result.access_token, undefined)
+  assert.equal(refreshPayload.result.refresh_token, undefined)
+  assert.equal(refreshPayload.result.user_bound, true)
+  assert.equal(refreshPayload.result.active_identity, 'user')
 })
 
 test('manager bootstrap seeds the known aliyun project baseline through the CLI', async () => {
@@ -839,6 +951,50 @@ test('coworker wait returns timed_out when no pending request arrives', async ()
   assert.equal(payload.command, 'coworker wait')
   assert.equal(payload.timed_out, true)
   assert.equal(payload.request, null)
+})
+
+test('concurrent coworker wait calls do not double-claim the same request', async () => {
+  const storageRoot = await createStorageRoot()
+  const coworkerStore = createCoworkerStore({ storageRoot })
+
+  await coworkerStore.createRequest({
+    sessionId: 'session-concurrent',
+    target: 'codex_mac_local',
+    title: 'Concurrent listener race',
+    question: '这条请求只能被一个 listener 领走。'
+  })
+
+  const waitArgs = [
+    'coworker',
+    'wait',
+    '--storage-root',
+    storageRoot,
+    '--target',
+    'codex_mac_local',
+    '--claim-by',
+    'codex_mac_local',
+    '--location',
+    'mac_local_codex',
+    '--timeout-ms',
+    '120',
+    '--poll-interval-ms',
+    '10',
+    '--json'
+  ]
+
+  const [first, second] = await Promise.all([
+    executeCli({ argv: waitArgs }),
+    executeCli({ argv: waitArgs })
+  ])
+  const payloads = [JSON.parse(first.stdout), JSON.parse(second.stdout)]
+  const claimed = payloads.filter((payload) => payload.timed_out === false)
+  const timedOut = payloads.filter((payload) => payload.timed_out === true)
+
+  assert.equal(claimed.length, 1)
+  assert.equal(timedOut.length, 1)
+  assert.equal(claimed[0].request.status, 'claimed')
+  assert.equal(claimed[0].request.claimed_by, 'codex_mac_local')
+  assert.equal(timedOut[0].request, null)
 })
 
 test('missing required arguments returns a non-zero result with a clear error', async () => {

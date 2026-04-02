@@ -627,3 +627,165 @@ test('executeCurrentManagerStep plans one deploy command and pauses for approval
     timeout_ms: 180000
   })
 })
+
+test('continueApprovedManagerStep executes one approved deploy command and completes the step', async () => {
+  const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
+  const managerExecutor = createManagerExecutor({
+    storageRoot,
+    workspaceRoot,
+    codexCommand: '/bin/echo',
+    fetchFn: async (url) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return `health ok ${url}`
+      }
+    }),
+    executionProvider: {
+      async invokeByIntent() {
+        return {
+          route: {
+            provider: 'bailian',
+            model: 'qwen3.5-plus'
+          },
+          request: {
+            base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+            model: 'qwen3.5-plus'
+          },
+          response: {
+            id: 'chatcmpl-execution-continue',
+            model: 'qwen3.5-plus',
+            finish_reason: 'stop',
+            usage: {
+              total_tokens: 36
+            },
+            content: JSON.stringify({
+              cwd: join(workspaceRoot, 'deploy-hub'),
+              command: "printf 'deploy ok\\n'",
+              summary: '准备在 deploy-hub 执行发布命令',
+              timeout_ms: 1000
+            })
+          }
+        }
+      }
+    }
+  })
+  const created = await sessionStore.createSession({
+    title: 'Manager deploy continue flow',
+    projectKey: 'remote-server-manager',
+    userRequest: 'Deploy deploy-hub'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: '发布 deploy-hub 到线上',
+        kind: 'deploy'
+      }
+    ]
+  })
+  await sessionStore.appendTimelineEvent(created.session.id, {
+    kind: 'manager_plan_generated',
+    actor: 'manager:planner',
+    payload: {
+      project_keys: ['deploy-hub']
+    }
+  })
+
+  const waiting = await managerExecutor.executeCurrentManagerStep({
+    sessionId: created.session.id
+  })
+  const approvalId = waiting.execution.approvals[0].id
+
+  const continued = await managerExecutor.continueApprovedManagerStep({
+    sessionId: created.session.id,
+    approvalId,
+    currentInput: '继续'
+  })
+  const loaded = await sessionStore.loadSession(created.session.id)
+
+  assert.equal(waiting.status, 'waiting_approval')
+  assert.equal(continued.status, 'completed')
+  assert.match(continued.summary, /deploy ok/)
+  assert.equal(loaded.session.status, 'completed')
+  assert.equal(loaded.approvals[0].status, 'approved')
+})
+
+test('executeCurrentManagerStep rejects execution cwd values outside the target project roots', async () => {
+  const { sessionStore, storageRoot, workspaceRoot, managerProfile } = await createHarness()
+  const managerExecutor = createManagerExecutor({
+    storageRoot,
+    workspaceRoot,
+    codexCommand: '/bin/echo',
+    fetchFn: async (url) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return `health ok ${url}`
+      }
+    }),
+    executionProvider: {
+      async invokeByIntent() {
+        return {
+          route: {
+            provider: 'bailian',
+            model: 'qwen3.5-plus'
+          },
+          request: {
+            base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+            model: 'qwen3.5-plus'
+          },
+          response: {
+            id: 'chatcmpl-execution-unsafe-cwd',
+            model: 'qwen3.5-plus',
+            finish_reason: 'stop',
+            usage: {
+              total_tokens: 32
+            },
+            content: JSON.stringify({
+              cwd: '/etc',
+              command: 'pwd',
+              summary: 'Try to run outside the project roots'
+            })
+          }
+        }
+      }
+    },
+    managerProfile
+  })
+  const created = await sessionStore.createSession({
+    title: 'Reject out-of-root execution cwd',
+    projectKey: 'remote-server-manager',
+    userRequest: 'Deploy deploy-hub safely'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: '发布 deploy-hub 到线上',
+        kind: 'deploy'
+      }
+    ]
+  })
+  await sessionStore.appendTimelineEvent(created.session.id, {
+    kind: 'manager_plan_generated',
+    actor: 'manager:planner',
+    payload: {
+      project_keys: ['deploy-hub']
+    }
+  })
+
+  const result = await managerExecutor.executeCurrentManagerStep({
+    sessionId: created.session.id
+  })
+  const loaded = await sessionStore.loadSession(created.session.id)
+
+  assert.equal(result.status, 'failed')
+  assert.match(result.summary, /target project roots/i)
+  assert.equal(loaded.session.status, 'blocked')
+  assert.equal(loaded.task.status, 'failed')
+  assert.equal(loaded.plan_steps[0].status, 'failed')
+  assert.match(loaded.plan_steps[0].notes, /target project roots/i)
+})

@@ -22,7 +22,8 @@ export function createStepExecutor({
     currentInput,
     toolName,
     toolInput = {},
-    skillRefs = []
+    skillRefs = [],
+    abortSignal = null
   }) {
     const snapshot = await sessionStore.loadSession(sessionId)
     const stepId = snapshot.task.current_step_id
@@ -47,7 +48,8 @@ export function createStepExecutor({
       sessionId,
       stepId,
       toolName,
-      input: toolInput
+      input: toolInput,
+      abortSignal
     })
 
     if (toolResult.status === 'ok') {
@@ -79,6 +81,22 @@ export function createStepExecutor({
       }
     }
 
+    if (toolResult.status === 'aborted') {
+      const aborted = await sessionStore.abortSession(sessionId, {
+        reason: toolResult.error?.message ?? `Tool ${toolName} was aborted`
+      })
+
+      return {
+        status: 'stopped',
+        context,
+        tool_result: toolResult,
+        session: aborted.session,
+        task: aborted.task,
+        plan_steps: aborted.plan_steps,
+        approvals: aborted.approvals
+      }
+    }
+
     const failed = await sessionStore.failPlanStep(sessionId, stepId, {
       errorMessage: toolResult.error?.message ?? `Tool ${toolName} failed`
     })
@@ -99,7 +117,8 @@ export function createStepExecutor({
     currentInput,
     resolvedBy = 'user',
     resolutionNote = null,
-    skillRefs = []
+    skillRefs = [],
+    abortSignal = null
   }) {
     const resolved = await sessionStore.resolveApproval(sessionId, approvalId, 'approved', {
       resolvedBy,
@@ -111,7 +130,8 @@ export function createStepExecutor({
       currentInput,
       toolName: resolved.approval.tool_name,
       toolInput: resolved.approval.requested_input,
-      skillRefs
+      skillRefs,
+      abortSignal
     })
 
     return {

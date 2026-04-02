@@ -1,7 +1,10 @@
-import { mkdir, readdir } from 'node:fs/promises'
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readJson, writeJsonAtomic } from '../../storage/json-files.js'
 import { createUlid } from '../session/session-store.js'
+
+const DEFAULT_REQUEST_LOCK_TIMEOUT_MS = 5 * 1000
+const DEFAULT_REQUEST_LOCK_POLL_INTERVAL_MS = 10
 
 function nowIso() {
   return new Date().toISOString()
@@ -49,11 +52,31 @@ function sortRequests(requests = []) {
   })
 }
 
+function waitForMs(durationMs) {
+  if (durationMs == null || durationMs <= 0) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    setTimeout(resolve, durationMs)
+  })
+}
+
+function createCoworkerStoreError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
 export function createCoworkerStore({ storageRoot }) {
   const requestsRoot = join(storageRoot, 'coworkers', 'requests')
 
   function getRequestPath(requestId) {
     return join(requestsRoot, `${requestId}.json`)
+  }
+
+  function getRequestLockPath(requestId) {
+    return join(requestsRoot, `${requestId}.lock`)
   }
 
   async function listRequestFiles() {
@@ -194,16 +217,63 @@ export function createCoworkerStore({ storageRoot }) {
     return requests.slice(0, limit)
   }
 
-  async function updateRequest(requestId, updater) {
-    const existing = await getRequest(requestId)
+  async function withRequestLock(requestId, callback, {
+    timeoutMs = DEFAULT_REQUEST_LOCK_TIMEOUT_MS,
+    pollIntervalMs = DEFAULT_REQUEST_LOCK_POLL_INTERVAL_MS
+  } = {}) {
+    const normalizedRequestId = cleanText(requestId)
 
-    if (!existing) {
-      throw new Error(`Unknown coworker request: ${requestId}`)
+    if (!normalizedRequestId) {
+      throw new Error('Missing required field: requestId')
     }
 
-    const updated = updater(existing)
-    await writeJsonAtomic(getRequestPath(existing.id), updated)
-    return updated
+    const lockPath = getRequestLockPath(normalizedRequestId)
+    const startedAt = Date.now()
+
+    await mkdir(requestsRoot, { recursive: true })
+
+    while (true) {
+      try {
+        await mkdir(lockPath)
+        break
+      } catch (error) {
+        if (error?.code !== 'EEXIST') {
+          throw error
+        }
+
+        if (Date.now() - startedAt > timeoutMs) {
+          throw createCoworkerStoreError(
+            'COWORKER_REQUEST_LOCK_TIMEOUT',
+            `Timed out acquiring coworker request lock: ${normalizedRequestId}`
+          )
+        }
+
+        await waitForMs(pollIntervalMs)
+      }
+    }
+
+    try {
+      return await callback()
+    } finally {
+      await rm(lockPath, {
+        recursive: true,
+        force: true
+      })
+    }
+  }
+
+  async function updateRequest(requestId, updater, lockOptions = {}) {
+    return withRequestLock(requestId, async () => {
+      const existing = await getRequest(requestId)
+
+      if (!existing) {
+        throw new Error(`Unknown coworker request: ${requestId}`)
+      }
+
+      const updated = await updater(existing)
+      await writeJsonAtomic(getRequestPath(existing.id), updated)
+      return updated
+    }, lockOptions)
   }
 
   async function claimRequest(requestId, {
@@ -217,11 +287,18 @@ export function createCoworkerStore({ storageRoot }) {
     }
 
     return updateRequest(requestId, (existing) => {
+      if (existing.status !== 'pending') {
+        throw createCoworkerStoreError(
+          'COWORKER_REQUEST_NOT_PENDING',
+          `Coworker request is no longer pending: ${existing.id}`
+        )
+      }
+
       const claimedAt = nowIso()
 
       return {
         ...existing,
-        status: existing.status === 'resolved' ? 'resolved' : 'claimed',
+        status: 'claimed',
         claimed_by: normalizedClaimedBy,
         claimed_at: existing.claimed_at ?? claimedAt,
         location: cleanText(location) || existing.location,
@@ -248,6 +325,20 @@ export function createCoworkerStore({ storageRoot }) {
     }
 
     return updateRequest(requestId, (existing) => {
+      if (existing.status === 'resolved') {
+        throw createCoworkerStoreError(
+          'COWORKER_REQUEST_ALREADY_RESOLVED',
+          `Coworker request is already resolved: ${existing.id}`
+        )
+      }
+
+      if (!['pending', 'claimed'].includes(existing.status)) {
+        throw createCoworkerStoreError(
+          'COWORKER_REQUEST_NOT_RESOLVABLE',
+          `Coworker request cannot be resolved from status ${existing.status}: ${existing.id}`
+        )
+      }
+
       const resolvedAt = nowIso()
 
       return {

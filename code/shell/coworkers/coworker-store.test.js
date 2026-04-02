@@ -58,6 +58,28 @@ test('claimRequest marks one request as claimed by the Mac-local Codex listener'
   assert.equal(claimed.location, 'mac_local_codex')
 })
 
+test('claimRequest rejects a second claimant after the request is already claimed', async () => {
+  const { coworkerStore } = await createHarness()
+  const created = await coworkerStore.createRequest({
+    target: 'codex_mac_local',
+    title: 'Need one exclusive listener',
+    question: '只允许一个 listener 抢到这条请求。'
+  })
+
+  await coworkerStore.claimRequest(created.id, {
+    claimedBy: 'codex_mac_local',
+    location: 'mac_local_codex'
+  })
+
+  await assert.rejects(
+    () => coworkerStore.claimRequest(created.id, {
+      claimedBy: 'codex_mac_local_2',
+      location: 'mac_local_codex_2'
+    }),
+    /no longer pending/i
+  )
+})
+
 test('resolveRequest writes the coworker answer back onto the request record', async () => {
   const { coworkerStore } = await createHarness()
   const created = await coworkerStore.createRequest({

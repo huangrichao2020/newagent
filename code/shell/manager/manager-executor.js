@@ -3,6 +3,7 @@ import { createProjectRegistry } from '../projects/project-registry.js'
 import { buildPromptContract } from '../prompts/prompt-contract.js'
 import { createSessionStore } from '../session/session-store.js'
 import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
+import { isAbsolute, resolve, sep } from 'node:path'
 
 function cleanString(value) {
   if (value === undefined || value === null) {
@@ -614,6 +615,42 @@ function resolveProjectWorkspace(project, workspaceRoot) {
   return project?.source_root
     ?? project?.runtime_root
     ?? workspaceRoot
+}
+
+function isPathWithinRoot(candidatePath, rootPath) {
+  const normalizedCandidate = resolve(candidatePath)
+  const normalizedRoot = resolve(rootPath)
+
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
+}
+
+function resolveAllowedExecutionRoots(project, workspaceRoot) {
+  return [
+    project?.source_root,
+    project?.runtime_root,
+    project?.publish_root,
+    resolveProjectWorkspace(project, workspaceRoot)
+  ]
+    .filter(Boolean)
+    .map((path) => resolve(path))
+    .filter((path, index, list) => list.indexOf(path) === index)
+}
+
+function assertExecutionCwdAllowed({
+  cwd,
+  project,
+  workspaceRoot
+}) {
+  if (!cwd || !isAbsolute(cwd)) {
+    throw new Error('Execution response cwd must be an absolute path')
+  }
+
+  const allowedRoots = resolveAllowedExecutionRoots(project, workspaceRoot)
+
+  if (!allowedRoots.some((root) => isPathWithinRoot(cwd, root))) {
+    throw new Error(`Execution response cwd must stay within the target project roots: ${cwd}`)
+  }
 }
 
 function buildCodexInstruction({
@@ -1457,6 +1494,11 @@ export function createManagerExecutor({
       text: providerResult.response.content ?? '',
       defaultCwd
     })
+    assertExecutionCwdAllowed({
+      cwd: executionPlan.cwd,
+      project,
+      workspaceRoot
+    })
 
     return {
       supported: true,
@@ -1526,7 +1568,8 @@ export function createManagerExecutor({
   async function executeCurrentManagerStep({
     sessionId,
     currentInput = null,
-    skillRefs = []
+    skillRefs = [],
+    abortSignal = null
   }) {
     const snapshot = await sessionStore.loadSession(sessionId)
     const step = snapshot.plan_steps.find(
@@ -1556,12 +1599,36 @@ export function createManagerExecutor({
     let selection = initialSelection
 
     if (selection.action === 'execution') {
-      selection = await buildExecutionSelection({
-        step,
-        project: selection.project,
-        operatorRequest: currentInput ?? snapshot.task.user_request,
-        sessionSummary: snapshot.session.summary
-      })
+      try {
+        selection = await buildExecutionSelection({
+          step,
+          project: selection.project,
+          operatorRequest: currentInput ?? snapshot.task.user_request,
+          sessionSummary: snapshot.session.summary
+        })
+      } catch (error) {
+        const failed = await sessionStore.failPlanStep(sessionId, step.id, {
+          errorMessage: error.message
+        })
+
+        return {
+          status: 'failed',
+          selection: {
+            ...selection,
+            supported: false,
+            reason: error.message
+          },
+          summary: error.message,
+          error: {
+            message: error.message
+          },
+          execution: {
+            session: failed.session,
+            task: failed.task,
+            plan_steps: failed.plan_steps
+          }
+        }
+      }
     }
 
     if (!selection.supported) {
@@ -1612,7 +1679,8 @@ export function createManagerExecutor({
       currentInput: currentInput ?? snapshot.task.user_request,
       toolName: selection.tool_name,
       toolInput: selection.tool_input,
-      skillRefs
+      skillRefs,
+      abortSignal
     })
 
     if (execution.status === 'planned' || execution.status === 'completed') {
@@ -1667,7 +1735,8 @@ export function createManagerExecutor({
     maxSteps = 4,
     skillRefs = [],
     onProgress = null,
-    shouldStop = null
+    shouldStop = null,
+    abortSignal = null
   }) {
     const runs = []
 
@@ -1696,7 +1765,8 @@ export function createManagerExecutor({
       const result = await executeCurrentManagerStep({
         sessionId,
         currentInput,
-        skillRefs
+        skillRefs,
+        abortSignal
       })
 
       runs.push(result)
@@ -1725,6 +1795,69 @@ export function createManagerExecutor({
     return finalizeLoop()
   }
 
+  async function continueApprovedManagerStep({
+    sessionId,
+    approvalId,
+    currentInput = null,
+    resolvedBy = 'user',
+    resolutionNote = null,
+    skillRefs = [],
+    abortSignal = null
+  }) {
+    const continued = await stepExecutor.continueApprovedStep({
+      sessionId,
+      approvalId,
+      currentInput,
+      resolvedBy,
+      resolutionNote,
+      skillRefs,
+      abortSignal
+    })
+
+    if (
+      continued.execution.status === 'planned'
+      || continued.execution.status === 'completed'
+    ) {
+      const summary = summarizeSelectionOutput({
+        toolName: continued.approval.tool_name,
+        output: continued.execution.tool_result.output
+      })
+
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'manager_step_executed',
+        actor: 'manager:executor',
+        payload: {
+          tool_name: continued.approval.tool_name,
+          summary,
+          approval_id: continued.approval.id
+        }
+      })
+
+      return {
+        status: continued.execution.status,
+        approval: continued.approval,
+        summary,
+        execution: continued.execution
+      }
+    }
+
+    if (continued.execution.status === 'waiting_approval') {
+      return {
+        status: 'waiting_approval',
+        approval: continued.approval,
+        summary: `当前步骤等待审批：${continued.approval.tool_name}`,
+        execution: continued.execution
+      }
+    }
+
+    return {
+      status: continued.execution.status,
+      approval: continued.approval,
+      summary: continued.execution.tool_result?.error?.message ?? null,
+      execution: continued.execution
+    }
+  }
+
   async function runSafeInspectLoop({
     sessionId,
     currentInput = null,
@@ -1740,6 +1873,7 @@ export function createManagerExecutor({
   }
 
   return {
+    continueApprovedManagerStep,
     executeCurrentManagerStep,
     runManagerLoop,
     runSafeInspectLoop

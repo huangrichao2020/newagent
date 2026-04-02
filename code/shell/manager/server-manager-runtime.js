@@ -222,11 +222,11 @@ function normalizeFeishuOperatorProfile(value = {}) {
 }
 
 function buildFeishuCommandHintText() {
-  return '/fast 简短回复 | /thinking 持续反馈 | /appendmsg 内容 追加建议 | /stop 停止当前轮 | /status 当前状态'
+  return '/fast 简短回复 | /thinking 持续反馈 | /appendmsg 内容 追加建议 | /stop 安全停止 | /stopnow 立即终止命令 | /status 当前状态'
 }
 
 function buildFeishuCommandHintMarkdown() {
-  return '`/fast` 简短回复  `/thinking` 持续反馈  `/appendmsg 内容` 追加建议  `/stop` 停止当前轮  `/status` 当前状态'
+  return '`/fast` 简短回复  `/thinking` 持续反馈  `/appendmsg 内容` 追加建议  `/stop` 安全停止  `/stopnow` 立即终止命令  `/status` 当前状态'
 }
 
 function buildFeishuResponseModeLabel(mode) {
@@ -703,6 +703,28 @@ function buildFeishuReplyCard({
   }
 }
 
+function buildFeishuAutoExecuteReportText(approval) {
+  const lines = [
+    '下一步是高风险执行，我按报备机制直接推进。'
+  ]
+
+  if (approval?.tool_name) {
+    lines.push(`工具：${approval.tool_name}`)
+  }
+
+  if (approval?.requested_input?.cwd) {
+    lines.push(`目录：${approval.requested_input.cwd}`)
+  }
+
+  if (approval?.requested_input?.command) {
+    lines.push(`命令：${approval.requested_input.command}`)
+  }
+
+  lines.push('如需停止，立即发送 `/stop` 或直接回复“停止”。')
+
+  return lines.join('\n')
+}
+
 function buildFeishuConversationCard({
   title = '当前情况',
   template = 'blue',
@@ -912,6 +934,10 @@ function isNegativeConfirmationMessage(message) {
   return NEGATIVE_CONFIRMATION_SIGNAL_PATTERN.test(
     normalizeForSignalMatch(buildOperatorRequest(message))
   )
+}
+
+function findPendingApproval(snapshot) {
+  return snapshot?.approvals?.find((approval) => approval.status === 'pending') ?? null
 }
 
 function buildFeishuLongRunningFeedbackText(runState, nowTimestamp) {
@@ -1696,6 +1722,7 @@ export function createServerManagerRuntime({
   workspaceRoot = process.cwd(),
   fetchFn = globalThis.fetch,
   managerProfile = createRemoteServerManagerProfile(),
+  managerExecutor: injectedManagerExecutor = null,
   progressReplyDelayMs = 2000,
   longRunningFeedbackMs = DEFAULT_FEISHU_LONG_RUNNING_FEEDBACK_MS,
   longRunningCheckpointMs = DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS,
@@ -1714,7 +1741,7 @@ export function createServerManagerRuntime({
   const runtimeHookBus = hookBus ?? createHookBus({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
   const infrastructureRegistry = createInfrastructureRegistry({ storageRoot })
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = injectedManagerExecutor ?? createManagerExecutor({
     storageRoot,
     workspaceRoot,
     fetchFn,
@@ -2097,14 +2124,48 @@ export function createServerManagerRuntime({
   }
 
   async function bootstrapServerBaseline({
-    seedAliyun = true
+    seedAliyun = true,
+    preserveExisting = false
   } = {}) {
-    const seededProjects = seedAliyun
-      ? await projectRegistry.seedProjects(getAliyunSeedProjects())
-      : []
-    const seededInfrastructure = seedAliyun
-      ? await infrastructureRegistry.seedRegistry(getAliyunInfrastructureRegistry())
-      : { projects: [], services: [], routes: [] }
+    let seededProjects = []
+    let seededInfrastructure = { projects: [], services: [], routes: [] }
+
+    if (seedAliyun) {
+      let baselineProjects = getAliyunSeedProjects()
+      let baselineInfrastructure = getAliyunInfrastructureRegistry()
+
+      if (preserveExisting) {
+        const existingProjects = await projectRegistry.listProjects()
+        const existingInfrastructureProjects = await infrastructureRegistry.listProjects()
+        const existingServices = await infrastructureRegistry.listServices()
+        const existingRoutes = await infrastructureRegistry.listRoutes()
+
+        const existingProjectKeys = new Set(existingProjects.map((project) => project.project_key))
+        const existingInfrastructureProjectKeys = new Set(
+          existingInfrastructureProjects.map((project) => project.project_key)
+        )
+        const existingServiceKeys = new Set(existingServices.map((service) => service.service_key))
+        const existingRouteKeys = new Set(existingRoutes.map((route) => route.route_key))
+
+        baselineProjects = baselineProjects.filter(
+          (project) => !existingProjectKeys.has(project.project_key)
+        )
+        baselineInfrastructure = {
+          projects: baselineInfrastructure.projects.filter(
+            (project) => !existingInfrastructureProjectKeys.has(project.project_key)
+          ),
+          services: baselineInfrastructure.services.filter(
+            (service) => !existingServiceKeys.has(service.service_key)
+          ),
+          routes: baselineInfrastructure.routes.filter(
+            (route) => !existingRouteKeys.has(route.route_key)
+          )
+        }
+      }
+
+      seededProjects = await projectRegistry.seedProjects(baselineProjects)
+      seededInfrastructure = await infrastructureRegistry.seedRegistry(baselineInfrastructure)
+    }
 
     return {
       manager_profile: managerProfile,
@@ -2296,6 +2357,38 @@ export function createServerManagerRuntime({
 
     if (existingState?.session_id) {
       try {
+        const currentSnapshot = await sessionStore.loadSession(existingState.session_id)
+        const pendingApproval = findPendingApproval(currentSnapshot)
+
+        if (pendingApproval) {
+          await sessionStore.appendTimelineEvent(existingState.session_id, {
+            kind: 'user_message_added',
+            actor: 'user',
+            payload: {
+              content: userRequest,
+              ...(userMessageMeta ?? {})
+            },
+            at: currentAt
+          })
+          const preserved = await sessionStore.loadSession(existingState.session_id)
+          const nextState = await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+            ...existingState,
+            channel: 'feishu',
+            session_id: preserved.session.id,
+            updated_at: currentAt,
+            last_message_at: currentAt,
+            operator_profile: normalizeFeishuOperatorProfile(existingState?.operator_profile),
+            version: 1
+          })
+
+          return {
+            kind: 'approval_pending',
+            snapshot: preserved,
+            channel_state: nextState,
+            pending_approval: findPendingApproval(preserved)
+          }
+        }
+
         const continued = await sessionStore.startNextTurn(existingState.session_id, {
           title,
           userRequest,
@@ -4309,7 +4402,9 @@ export function createServerManagerRuntime({
       `排队消息：${feishuInboundQueue.pending.length}`
     ]
 
-    if (feishuRuntimeState.active_run?.stop_requested) {
+    if (feishuRuntimeState.active_run?.stop_stage === 'operator_stopnow_command') {
+      lines.push('当前状态：已收到 /stopnow，正在立即终止当前命令。')
+    } else if (feishuRuntimeState.active_run?.stop_requested) {
       lines.push('当前状态：已收到停止请求，正在最近的安全点停下。')
     } else if (feishuRuntimeState.active_run) {
       lines.push('当前状态：正在处理。')
@@ -4487,6 +4582,7 @@ export function createServerManagerRuntime({
 
       if (activeRun) {
         activeRun.stop_requested = true
+        activeRun.stop_stage = 'operator_stop_command'
       } else {
         const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
         await abortFeishuSessionAtSafePoint(channelState?.session_id ?? null)
@@ -4513,6 +4609,40 @@ export function createServerManagerRuntime({
       }
     }
 
+    if (parsed.command === 'stopnow') {
+      const activeRun = feishuRuntimeState.active_run
+      const clearedCount = clearQueuedFeishuEntries('stopped_now_by_operator')
+
+      if (activeRun) {
+        activeRun.stop_requested = true
+        activeRun.stop_stage = 'operator_stopnow_command'
+        activeRun.abort_controller?.abort(new Error('operator_stopnow_command'))
+      } else {
+        const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+        await abortFeishuSessionAtSafePoint(channelState?.session_id ?? null, 'operator_stopnow_command')
+      }
+
+      const ackText = activeRun
+        ? `已收到 /stopnow，正在立即终止当前命令，排队消息已清空 ${clearedCount} 条。`
+        : `当前没有正在执行的命令，已清空排队消息 ${clearedCount} 条。`
+
+      await deliverFeishuReply({
+        sessionId: activeRun?.session_id ?? null,
+        message,
+        text: ackText,
+        stage: 'command_reply'
+      })
+
+      return {
+        session_id: activeRun?.session_id ?? null,
+        ack_text: ackText,
+        planning: null,
+        execution: null,
+        command_name: 'stopnow',
+        stopped: true
+      }
+    }
+
     return null
   }
 
@@ -4530,6 +4660,7 @@ export function createServerManagerRuntime({
           id: createUlid(nowFn()),
           stop_requested: false,
           stop_stage: null,
+          abort_controller: typeof AbortController === 'function' ? new AbortController() : null,
           session_id: null,
           started_at_ms: nowFn(),
           phase: 'received',
@@ -4745,6 +4876,152 @@ export function createServerManagerRuntime({
             replyText: directReply.text,
             relation: attentionContext.relation
           })
+        } else if (activeTurn.kind === 'approval_pending') {
+          const pendingApproval = activeTurn.pending_approval ?? findPendingApproval(currentSnapshot)
+          const approvalMessage = buildOperatorRequest(message)
+          const parsedCommand = parseFeishuControlCommand(message)
+          const operatorApproved = isPositiveConfirmationMessage(message)
+          const operatorDenied = parsedCommand?.command === 'stop'
+            || isNegativeConfirmationMessage(message)
+
+          if (pendingApproval && operatorDenied) {
+            const resolved = await sessionStore.resolveApproval(
+              sessionId,
+              pendingApproval.id,
+              'rejected',
+              {
+                resolvedBy: 'operator:feishu',
+                resolutionNote: approvalMessage || null
+              }
+            )
+
+            execution = {
+              status: 'blocked',
+              runs: [],
+              approvals: resolved.approvals,
+              session: resolved.session,
+              task: resolved.task,
+              plan_steps: resolved.plan_steps
+            }
+            ackText = '收到，这轮先停在这里。当前待审批步骤已取消。'
+            await emitHook({
+              name: 'manager.approval.rejected',
+              sessionId,
+              actor: 'manager:runtime',
+              payload: {
+                tool_name: pendingApproval.tool_name
+              }
+            })
+          } else if (pendingApproval && operatorApproved) {
+            updateFeishuRunProgressState(feishuRunState, {
+              phase: 'executing'
+            })
+
+            const continued = await managerExecutor.continueApprovedManagerStep({
+              sessionId,
+              approvalId: pendingApproval.id,
+              currentInput: approvalMessage,
+              resolvedBy: 'operator:feishu',
+              resolutionNote: approvalMessage || null,
+              abortSignal: feishuRunState?.abort_controller?.signal ?? null
+            })
+            let continuedRuns = [continued]
+            let latestExecution = {
+              status: continued.status,
+              runs: continuedRuns,
+              report_text: continued.report_text ?? null,
+              approvals: continued.execution.approvals ?? []
+            }
+
+            if (continued.status === 'planned') {
+              const tail = await managerExecutor.runManagerLoop({
+                sessionId,
+                currentInput: approvalMessage,
+                maxSteps: 4,
+                abortSignal: feishuRunState?.abort_controller?.signal ?? null,
+                shouldStop: () => feishuRunState?.stop_requested === true
+              })
+              continuedRuns = [...continuedRuns, ...tail.runs]
+              latestExecution = {
+                ...tail,
+                runs: continuedRuns
+              }
+            } else {
+              const latestSnapshot = await sessionStore.loadSession(sessionId)
+              latestExecution = {
+                ...latestExecution,
+                session: latestSnapshot.session,
+                task: latestSnapshot.task,
+                plan_steps: latestSnapshot.plan_steps,
+                approvals: latestSnapshot.approvals
+              }
+            }
+
+            execution = latestExecution
+
+            if (execution?.status === 'stopped') {
+              throw new FeishuRunStoppedError(
+                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
+              )
+            }
+
+            ackText = '收到，我继续推进。'
+
+            const completedLabels = summarizeExecutionRunsForReply(execution.runs ?? [])
+
+            if (completedLabels.length > 0) {
+              ackText = `${ackText}\n已推进：${completedLabels.join('\n')}`
+            }
+
+            if (execution.report_text) {
+              ackText = `${ackText}\n${execution.report_text}`
+            }
+
+            if (execution.status === 'waiting_approval') {
+              const nextPendingApproval = execution.approvals?.find(
+                (approval) => approval.status === 'pending'
+              ) ?? null
+
+              ackText = nextPendingApproval
+                ? `${ackText}\n下一步仍涉及高风险操作，当前等待审批：${nextPendingApproval.tool_name}`
+                : `${ackText}\n下一步仍涉及高风险操作，当前等待审批。`
+            }
+
+            await emitHook({
+              name: 'manager.approval.approved',
+              sessionId,
+              actor: 'manager:runtime',
+              payload: {
+                tool_name: pendingApproval.tool_name
+              }
+            })
+          } else {
+            updateFeishuRunProgressState(feishuRunState, {
+              phase: 'waiting_approval'
+            })
+            execution = {
+              status: 'waiting_approval',
+              runs: [],
+              approvals: currentSnapshot.approvals
+            }
+            ackText = `已收到，继续沿用总管会话 ${sessionId}。`
+
+            if (feedbackAck) {
+              ackText = `${ackText}\n${feedbackAck}`
+            }
+
+            ackText = pendingApproval
+              ? `${ackText}\n当前还有待审批步骤：${pendingApproval.tool_name}。这条补充不会清空当前计划和审批，等你审批后再继续推进。`
+              : `${ackText}\n当前仍在等待审批。这条补充不会清空当前计划和审批。`
+            await emitHook({
+              name: 'manager.approval.still_waiting',
+              sessionId,
+              actor: 'manager:runtime',
+              payload: {
+                tool_name: pendingApproval?.tool_name ?? null
+              }
+            })
+          }
         } else if (autoPlan && bailianProvider) {
           updateFeishuRunProgressState(feishuRunState, {
             phase: 'planning'
@@ -4808,6 +5085,7 @@ export function createServerManagerRuntime({
               sessionId,
               currentInput: buildOperatorRequest(message),
               maxSteps: 4,
+              abortSignal: feishuRunState?.abort_controller?.signal ?? null,
               onProgress: async ({ result, runs }) => {
                 updateFeishuRunProgressState(feishuRunState, {
                   phase: result.status === 'waiting_approval' ? 'waiting_approval' : 'executing',
@@ -4844,6 +5122,74 @@ export function createServerManagerRuntime({
               },
               shouldStop: () => feishuRunState?.stop_requested === true
             })
+
+            if (execution?.status === 'stopped') {
+              throw new FeishuRunStoppedError(
+                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
+              )
+            }
+
+            if (execution?.status === 'waiting_approval') {
+              const pendingApproval = execution.approvals?.find(
+                (approval) => approval.status === 'pending'
+              ) ?? null
+
+              if (channel === 'feishu' && pendingApproval?.tool_name === 'run_shell_command') {
+                const autoExecuteReport = buildFeishuAutoExecuteReportText(pendingApproval)
+                const continued = await managerExecutor.continueApprovedManagerStep({
+                  sessionId,
+                  approvalId: pendingApproval.id,
+                  currentInput: buildOperatorRequest(message),
+                  resolvedBy: 'manager:auto_report',
+                  resolutionNote: 'auto_execute_after_report',
+                  abortSignal: feishuRunState?.abort_controller?.signal ?? null
+                })
+                let continuedRuns = [...execution.runs, continued]
+
+                ackText = `${ackText}\n${autoExecuteReport}`
+
+                if (continued.status === 'planned') {
+                  const tail = await managerExecutor.runManagerLoop({
+                    sessionId,
+                    currentInput: buildOperatorRequest(message),
+                    maxSteps: 4,
+                    abortSignal: feishuRunState?.abort_controller?.signal ?? null,
+                    onProgress: async ({ result, runs }) => {
+                      updateFeishuRunProgressState(feishuRunState, {
+                        phase: result.status === 'waiting_approval' ? 'waiting_approval' : 'executing',
+                        latestRun: result,
+                        executionRuns: [...continuedRuns, ...runs]
+                      })
+                    },
+                    shouldStop: () => feishuRunState?.stop_requested === true
+                  })
+                  execution = {
+                    ...tail,
+                    runs: [...continuedRuns, ...tail.runs]
+                  }
+                } else {
+                  const latestSnapshot = await sessionStore.loadSession(sessionId)
+                  execution = {
+                    status: continued.status,
+                    runs: continuedRuns,
+                    report_text: continued.report_text ?? execution.report_text ?? null,
+                    session: latestSnapshot.session,
+                    task: latestSnapshot.task,
+                    plan_steps: latestSnapshot.plan_steps,
+                    approvals: latestSnapshot.approvals
+                  }
+                }
+
+                await emitHook({
+                  name: 'manager.approval.auto_execute_reported',
+                  sessionId,
+                  actor: 'manager:executor',
+                  payload: {
+                    tool_name: pendingApproval.tool_name
+                  }
+                })
+              }
+            }
 
             if (execution?.status === 'stopped') {
               throw new FeishuRunStoppedError(
@@ -5072,7 +5418,8 @@ export function createServerManagerRuntime({
     }
 
     const bootstrap = await bootstrapServerBaseline({
-      seedAliyun
+      seedAliyun,
+      preserveExisting: true
     })
     const state = await feishuGateway.start({
       immediateReactionEmojiType: autoReply ? buildImmediateFeishuReaction() : null,

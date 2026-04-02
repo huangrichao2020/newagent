@@ -157,6 +157,7 @@ export function createFeishuApiClient({
   return {
     config,
     baseConfig,
+    sdk,
     client: new sdk.Client(baseConfig)
   }
 }

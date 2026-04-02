@@ -1150,6 +1150,183 @@ test('executeTool can run Feishu workspace CRUD tools through the injected API c
   }
 })
 
+test('executeTool can prefer user_access_token for Feishu workspace CRUD while keeping scope inspection on app identity', async () => {
+  const previousAppId = process.env.NEWAGENT_FEISHU_APP_ID
+  const previousAppSecret = process.env.NEWAGENT_FEISHU_APP_SECRET
+  process.env.NEWAGENT_FEISHU_APP_ID = 'cli-test-app'
+  process.env.NEWAGENT_FEISHU_APP_SECRET = 'cli-test-secret'
+
+  try {
+    const calls = {
+      scopeList: [],
+      docCreate: [],
+      docConvert: [],
+      descendantCreate: []
+    }
+    const { sessionStore, toolRuntime } = await createHarness({
+      feishuApiClientFactory: () => ({
+        sdk: {
+          withUserAccessToken(token) {
+            return {
+              auth: token
+            }
+          },
+          withAll(items) {
+            return {
+              merged: items
+            }
+          }
+        },
+        client: {
+          application: {
+            scope: {
+              async list(_payload, options) {
+                calls.scopeList.push(options ?? null)
+                return {
+                  data: {
+                    scopes: []
+                  }
+                }
+              }
+            }
+          },
+          docx: {
+            document: {
+              async create(payload, options) {
+                calls.docCreate.push({
+                  payload,
+                  options
+                })
+                return {
+                  data: {
+                    document: {
+                      document_id: 'doc_user_1',
+                      title: payload.data.title
+                    }
+                  }
+                }
+              },
+              async convert(payload, options) {
+                calls.docConvert.push({
+                  payload,
+                  options
+                })
+                return {
+                  data: {
+                    first_level_block_ids: ['blk_1'],
+                    blocks: [
+                      {
+                        block_id: 'blk_1'
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            documentBlockDescendant: {
+              async create(payload, options) {
+                calls.descendantCreate.push({
+                  payload,
+                  options
+                })
+                return {
+                  data: {
+                    ok: true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }),
+      feishuUserAuthManager: {
+        async describeStatus() {
+          return {
+            oauth_ready: true,
+            auth_mode: 'user_preferred',
+            user_bound: true,
+            active_identity: 'user',
+            user: {
+              open_id: 'ou_123',
+              name: 'Tingchi'
+            }
+          }
+        },
+        async resolveRequestOptions(sdk, { identity } = {}) {
+          if (identity === 'app') {
+            return {
+              active_identity: 'app',
+              request_options: null,
+              user: null
+            }
+          }
+
+          return {
+            active_identity: 'user',
+            request_options: sdk.withUserAccessToken('user_access_123'),
+            user: {
+              open_id: 'ou_123',
+              name: 'Tingchi'
+            }
+          }
+        }
+      }
+    })
+    const created = await sessionStore.createSession({
+      title: 'Feishu user auth preference',
+      projectKey: 'remote-server-manager',
+      userRequest: '优先用用户身份创建飞书文档'
+    })
+
+    const scopes = await toolRuntime.executeTool({
+      sessionId: created.session.id,
+      toolName: 'channel_feishu_scope_list',
+      input: {}
+    })
+    const capabilityMatrix = await toolRuntime.executeTool({
+      sessionId: created.session.id,
+      toolName: 'channel_feishu_capability_matrix',
+      input: {}
+    })
+    const docCreate = await toolRuntime.executeTool({
+      sessionId: created.session.id,
+      toolName: 'channel_feishu_doc_create',
+      input: {
+        title: 'User Auth Brief',
+        content: '# brief'
+      }
+    })
+
+    assert.equal(scopes.status, 'ok')
+    assert.equal(calls.scopeList[0], null)
+    assert.equal(capabilityMatrix.status, 'ok')
+    assert.equal(capabilityMatrix.output.identity.active_identity, 'user')
+    assert.equal(capabilityMatrix.output.identity.user.name, 'Tingchi')
+    assert.equal(docCreate.status, 'ok')
+    assert.deepEqual(calls.docCreate[0].options, {
+      auth: 'user_access_123'
+    })
+    assert.deepEqual(calls.docConvert[0].options, {
+      auth: 'user_access_123'
+    })
+    assert.deepEqual(calls.descendantCreate[0].options, {
+      auth: 'user_access_123'
+    })
+  } finally {
+    if (previousAppId === undefined) {
+      delete process.env.NEWAGENT_FEISHU_APP_ID
+    } else {
+      process.env.NEWAGENT_FEISHU_APP_ID = previousAppId
+    }
+
+    if (previousAppSecret === undefined) {
+      delete process.env.NEWAGENT_FEISHU_APP_SECRET
+    } else {
+      process.env.NEWAGENT_FEISHU_APP_SECRET = previousAppSecret
+    }
+  }
+})
+
 test('executeTool can expose the tool catalog including dynamic tool metadata', async () => {
   const { sessionStore, toolRuntime, workspaceRoot } = await createHarness()
   const created = await sessionStore.createSession({
@@ -1301,15 +1478,53 @@ test('executeTool can register, list, and invoke one dynamic tool with review me
       text: 'hello dynamic'
     }
   })
+  const firstReviewAttempt = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    toolName: 'dynamic_tool_mark_reviewed',
+    input: {
+      tool_name: 'temp_echo_json',
+      review_status: 'approved',
+      review_notes: 'Checked and approved for execution.'
+    }
+  })
+  await sessionStore.resolveApproval(
+    created.session.id,
+    firstReviewAttempt.approval.id,
+    'approved',
+    {
+      resolvedBy: 'user'
+    }
+  )
+  const reviewed = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    toolName: 'dynamic_tool_mark_reviewed',
+    input: {
+      tool_name: 'temp_echo_json',
+      review_status: 'approved',
+      review_notes: 'Checked and approved for execution.'
+    }
+  })
+  const approvedInvoke = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    toolName: 'temp_echo_json',
+    input: {
+      text: 'hello dynamic'
+    }
+  })
 
   assert.equal(registered.status, 'ok')
   assert.equal(listed.status, 'ok')
   assert.equal(listed.output.tools.length, 1)
   assert.equal(listed.output.tools[0].tool_name, 'temp_echo_json')
   assert.equal(listed.output.tools[0].category, 'internal')
-  assert.equal(invoked.status, 'ok')
-  assert.equal(invoked.output.parsed_output.echoed, 'hello dynamic')
-  assert.equal(invoked.output.restart_required, true)
+  assert.equal(invoked.status, 'error')
+  assert.match(invoked.error.message, /pending review/i)
+  assert.equal(firstReviewAttempt.status, 'waiting_approval')
+  assert.equal(reviewed.status, 'ok')
+  assert.equal(reviewed.output.tool.review_status, 'approved')
+  assert.equal(approvedInvoke.status, 'ok')
+  assert.equal(approvedInvoke.output.parsed_output.echoed, 'hello dynamic')
+  assert.equal(approvedInvoke.output.restart_required, true)
 })
 
 test('executeTool can inspect registered PM2 process status through the safe PM2 tool', async () => {
@@ -1534,6 +1749,67 @@ test('executeTool can run an approved shell command through the portable shell a
     secondAttempt.output.stdout,
     new RegExp(workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   )
+})
+
+test('executeTool aborts an approved shell command when the abort signal fires', async () => {
+  const { workspaceRoot, sessionStore, toolRuntime } = await createHarness()
+  const created = await sessionStore.createSession({
+    title: 'Abort approved shell command execution',
+    projectKey: 'newagent',
+    userRequest: 'Abort one approved shell command'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: 'Abort one approved shell command',
+        kind: 'implementation'
+      }
+    ]
+  })
+  const snapshot = await sessionStore.loadSession(created.session.id)
+  const firstAttempt = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    stepId: snapshot.plan_steps[0].id,
+    toolName: 'run_shell_command',
+    input: {
+      cwd: workspaceRoot,
+      command: 'sleep 5',
+      timeout_ms: 10000
+    }
+  })
+
+  assert.equal(firstAttempt.status, 'waiting_approval')
+
+  await sessionStore.resolveApproval(
+    created.session.id,
+    firstAttempt.approval.id,
+    'approved',
+    {
+      resolvedBy: 'user'
+    }
+  )
+
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), 20)
+  const secondAttempt = await toolRuntime.executeTool({
+    sessionId: created.session.id,
+    stepId: snapshot.plan_steps[0].id,
+    toolName: 'run_shell_command',
+    input: {
+      cwd: workspaceRoot,
+      command: 'sleep 5',
+      timeout_ms: 10000
+    },
+    abortSignal: controller.signal
+  })
+  clearTimeout(abortTimer)
+
+  const loaded = await sessionStore.loadSession(created.session.id)
+
+  assert.equal(secondAttempt.status, 'aborted')
+  assert.equal(secondAttempt.error.code, 'tool_aborted')
+  assert.equal(loaded.timeline.at(-1).kind, 'tool_aborted')
 })
 
 test('executeTool normalizes unknown-tool failures without throwing', async () => {

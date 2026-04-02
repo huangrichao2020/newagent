@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServerManagerRuntime } from './server-manager-runtime.js'
@@ -13,6 +13,7 @@ import { createRemoteServerManagerProfile } from './remote-server-manager-profil
 async function createHarness({
   nowFn = Date.now,
   enableExternalReview = false,
+  managerExecutor = null,
   feishuAppendMergeWindowMs = undefined,
   plannerDelayMs = 0,
   fetchDelayMs = 0,
@@ -22,6 +23,7 @@ async function createHarness({
   longRunningExtensionApprovalMs = undefined,
   longRunningFinalStopMs = undefined,
   plannerResponse = null,
+  operateResponse = null,
   evaluationResponse = {
     verdict: 'pass',
     summary: '外部复核通过。',
@@ -161,6 +163,7 @@ async function createHarness({
       storageRoot,
       workspaceRoot,
       managerProfile,
+      managerExecutor,
       nowFn,
       feishuAppendMergeWindowMs,
       progressReplyDelayMs,
@@ -304,6 +307,39 @@ async function createHarness({
                   preferences: [
                     '先快速确认收到，再给处理结论。'
                   ]
+                })
+              }
+            }
+          }
+
+          if (input.intent === 'operate') {
+            const resolvedOperateResponse = typeof operateResponse === 'function'
+              ? operateResponse({
+                  workspaceRoot
+                })
+              : operateResponse
+
+            return {
+              route: {
+                provider: 'bailian',
+                model: 'qwen3.5-plus'
+              },
+              request: {
+                base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+                model: 'qwen3.5-plus'
+              },
+              response: {
+                id: 'chatcmpl-manager-operate',
+                model: 'qwen3.5-plus',
+                finish_reason: 'stop',
+                usage: {
+                  total_tokens: 48
+                },
+                content: JSON.stringify(resolvedOperateResponse ?? {
+                  cwd: workspaceRoot,
+                  command: 'pwd',
+                  summary: '检查当前工作目录。',
+                  timeout_ms: 1000
                 })
               }
             }
@@ -820,6 +856,129 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
   assert.ok(hooks.some((event) => event.name === 'manager.approval.waiting'))
 })
 
+test('handleChannelMessage keeps pending approval state when a follow-up arrives during waiting_approval', async () => {
+  const { runtime, storageRoot } = await createHarness({
+    plannerResponse: {
+      summary: '先修复 uwillberich 发布链，再回报处理状态。',
+      project_keys: ['uwillberich'],
+      operator_reply: '先修复 uwillberich，再给你回处理状态。',
+      steps: [
+        {
+          title: '修复 uwillberich 发布链',
+          kind: 'repair',
+          notes: '需要改动代码'
+        },
+        {
+          title: '汇报修复结果',
+          kind: 'report',
+          dependsOn: [0]
+        }
+      ]
+    }
+  })
+  const sessionStore = createSessionStore({ storageRoot })
+
+  await runtime.bootstrapServerBaseline()
+
+  const firstResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_repair_keep_1',
+      chat_id: 'oc_repair_keep',
+      sender_open_id: 'ou_repair_keep',
+      text: '修一下股票项目发布链'
+    }
+  })
+  const firstSnapshot = await sessionStore.loadSession(firstResult.session_id)
+  const firstApprovalId = firstSnapshot.approvals[0].id
+  const firstTaskId = firstSnapshot.task.id
+
+  const secondResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_repair_keep_2',
+      chat_id: 'oc_repair_keep',
+      sender_open_id: 'ou_repair_keep',
+      text: '先补充一下影响范围'
+    }
+  })
+  const secondSnapshot = await sessionStore.loadSession(secondResult.session_id)
+  const followUpMessages = secondSnapshot.timeline.filter((event) =>
+    event.kind === 'user_message_added'
+    && event.payload?.content === '先补充一下影响范围'
+  )
+
+  assert.equal(secondResult.session_id, firstResult.session_id)
+  assert.match(secondResult.ack_text, /不会清空当前计划和审批/)
+  assert.equal(secondSnapshot.session.status, 'waiting_approval')
+  assert.equal(secondSnapshot.task.status, 'waiting_approval')
+  assert.equal(secondSnapshot.task.id, firstTaskId)
+  assert.equal(secondSnapshot.approvals.length, 1)
+  assert.equal(secondSnapshot.approvals[0].id, firstApprovalId)
+  assert.equal(secondSnapshot.approvals[0].status, 'pending')
+  assert.equal(secondSnapshot.plan_steps[0].status, 'waiting_approval')
+  assert.equal(followUpMessages.length, 1)
+})
+
+test('handleChannelMessage auto-reports and executes a pending deploy step without waiting for approval', async () => {
+  const { runtime, storageRoot, projectRegistry, workspaceRoot } = await createHarness({
+    plannerResponse: {
+      summary: '先发布 deploy-hub，再汇报处理状态。',
+      project_keys: ['deploy-hub'],
+      operator_reply: '先发 deploy-hub，再给你回结果。',
+      steps: [
+        {
+          title: '发布 deploy-hub 到线上',
+          kind: 'deploy'
+        }
+      ]
+    },
+    operateResponse: ({ workspaceRoot }) => ({
+      cwd: join(workspaceRoot, 'deploy-hub'),
+      command: "printf 'deploy ok\\n'",
+      summary: '准备在 deploy-hub 执行发布命令',
+      timeout_ms: 1000
+    })
+  })
+  const sessionStore = createSessionStore({ storageRoot })
+  const deployHubRoot = join(workspaceRoot, 'deploy-hub')
+
+  await runtime.bootstrapServerBaseline()
+  await mkdir(deployHubRoot, { recursive: true })
+  await projectRegistry.registerProject({
+    project_key: 'deploy-hub',
+    name: 'deploy-hub',
+    tier: 'minor',
+    role: 'Static site publish infrastructure',
+    source_root: deployHubRoot,
+    runtime_root: join(workspaceRoot, 'deploy-runtime'),
+    publish_root: join(workspaceRoot, 'published'),
+    public_base_path: '/apps/',
+    pm2_name: 'deploy-hub',
+    service_endpoint: 'http://127.0.0.1:3900/_deploy/ticket',
+    status: 'active'
+  })
+
+  const firstResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_deploy_1',
+      chat_id: 'oc_deploy',
+      sender_open_id: 'ou_deploy',
+      text: '发布 deploy-hub'
+    }
+  })
+
+  const snapshot = await sessionStore.loadSession(firstResult.session_id)
+
+  assert.equal(firstResult.execution.status, 'completed')
+  assert.match(firstResult.ack_text, /高风险执行/)
+  assert.match(firstResult.ack_text, /\/stop/)
+  assert.match(firstResult.ack_text, /deploy ok/)
+  assert.equal(snapshot.session.status, 'completed')
+  assert.equal(snapshot.approvals[0].status, 'approved')
+})
+
 test('startFeishuLoop bootstraps projects and registers the Feishu onMessage handler', async () => {
   const { runtime, feishuGateway, projectRegistry } = await createHarness()
   const result = await runtime.startFeishuLoop()
@@ -832,6 +991,36 @@ test('startFeishuLoop bootstraps projects and registers the Feishu onMessage han
   assert.equal(feishuGateway.startOptions.immediateReactionEmojiType, 'SMILE')
   assert.equal(feishuGateway.startOptions.immediateReplyText, '已读喵，我在看啦。')
   assert.equal(projects.length, 6)
+})
+
+test('startFeishuLoop preserves existing project registry overrides while filling baseline gaps', async () => {
+  const { runtime, projectRegistry, workspaceRoot } = await createHarness()
+  const customDeployHubRoot = join(workspaceRoot, 'custom-deploy-hub')
+
+  await runtime.bootstrapServerBaseline()
+  await mkdir(customDeployHubRoot, { recursive: true })
+  await projectRegistry.registerProject({
+    project_key: 'deploy-hub',
+    name: 'deploy-hub',
+    tier: 'minor',
+    role: 'Static site publish infrastructure',
+    source_root: customDeployHubRoot,
+    runtime_root: join(workspaceRoot, 'custom-deploy-runtime'),
+    publish_root: join(workspaceRoot, 'custom-published'),
+    public_base_path: '/apps/custom/',
+    pm2_name: 'deploy-hub-custom',
+    service_endpoint: 'http://127.0.0.1:3901/_deploy/ticket',
+    status: 'active'
+  })
+
+  const result = await runtime.startFeishuLoop()
+  const deployHub = await projectRegistry.getProject('deploy-hub')
+
+  assert.equal(result.bootstrap.seeded_project_count, 0)
+  assert.equal(result.bootstrap.seeded_infra_project_count, 0)
+  assert.equal(deployHub?.source_root, customDeployHubRoot)
+  assert.equal(deployHub?.runtime_root, join(workspaceRoot, 'custom-deploy-runtime'))
+  assert.equal(deployHub?.pm2_name, 'deploy-hub-custom')
 })
 
 test('startFeishuLoop batches consecutive Feishu messages into one turn after a short quiet window', async () => {
@@ -1130,6 +1319,90 @@ test('startFeishuLoop stops the active turn at the next safe point when /stop ar
   const firstResult = await firstResultPromise
 
   assert.match(stopResult.ack_text, /stop|停止/)
+  assert.equal(firstResult.stopped, true)
+
+  if (firstResult.session_id) {
+    const snapshot = await sessionStore.loadSession(firstResult.session_id)
+    assert.equal(snapshot.session.status, 'aborted')
+  }
+})
+
+test('startFeishuLoop aborts the active command immediately when /stopnow arrives', async () => {
+  let observedAbortSignal = null
+  let abortEventCount = 0
+  let runLoopEntered = false
+
+  const { runtime, feishuGateway, sessionStore } = await createHarness({
+    managerExecutor: {
+      async continueApprovedManagerStep() {
+        throw new Error('continueApprovedManagerStep should not be called in this test')
+      },
+      async runManagerLoop({ sessionId, abortSignal }) {
+        runLoopEntered = true
+        observedAbortSignal = abortSignal
+
+        await new Promise((resolve) => {
+          if (!abortSignal) {
+            setTimeout(resolve, 1000)
+            return
+          }
+
+          if (abortSignal.aborted) {
+            abortEventCount += 1
+            resolve()
+            return
+          }
+
+          abortSignal.addEventListener('abort', () => {
+            abortEventCount += 1
+            resolve()
+          }, { once: true })
+        })
+
+        const snapshot = await sessionStore.loadSession(sessionId)
+        return {
+          status: 'stopped',
+          runs: [],
+          report_text: null,
+          session: snapshot.session,
+          task: snapshot.task,
+          plan_steps: snapshot.plan_steps,
+          approvals: snapshot.approvals
+        }
+      }
+    },
+    plannerDelayMs: 0,
+    progressReplyDelayMs: 0,
+    feishuAppendMergeWindowMs: 0
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_stopnow_active_1',
+    chat_id: 'oc_stopnow_active',
+    sender_open_id: 'ou_stopnow_active',
+    text: '先详细排查 deploy-hub 当前状态'
+  })
+
+  for (let index = 0; index < 20 && !runLoopEntered; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  const stopNowResult = await feishuGateway.onMessage({
+    message_id: 'om_stopnow_active_2',
+    chat_id: 'oc_stopnow_active',
+    sender_open_id: 'ou_stopnow_active',
+    text: '/stopnow'
+  })
+
+  const firstResult = await firstResultPromise
+
+  assert.equal(runLoopEntered, true)
+  assert.ok(observedAbortSignal)
+  assert.equal(observedAbortSignal.aborted, true)
+  assert.equal(abortEventCount, 1)
+  assert.match(stopNowResult.ack_text, /stopnow|立即终止/)
   assert.equal(firstResult.stopped, true)
 
   if (firstResult.session_id) {

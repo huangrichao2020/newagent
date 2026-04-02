@@ -18,6 +18,7 @@ import {
   createFeishuGateway,
   describeFeishuChannelConfig
 } from '../channels/feishu/feishu-gateway.js'
+import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
 import { createServerManagerRuntime } from '../manager/server-manager-runtime.js'
 import { createManagerExecutor } from '../manager/manager-executor.js'
 
@@ -116,6 +117,20 @@ function formatOutput(command, payload, asJson) {
   return `${content}\n`
 }
 
+function sanitizeFeishuUserAuthResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return result
+  }
+
+  const sanitized = {
+    ...result
+  }
+
+  delete sanitized.access_token
+  delete sanitized.refresh_token
+  return sanitized
+}
+
 function formatError(error, asJson) {
   const content = asJson
     ? JSON.stringify({ error: error.message }, null, 2)
@@ -198,6 +213,13 @@ export async function executeCli({
       dependencies.bailianProvider ?? createBailianProvider({ managerProfile, modelRouter })
     const feishuGatewayFactory =
       dependencies.feishuGatewayFactory ?? (() => createFeishuGateway())
+    const sharedFetchFn = dependencies.fetchFn ?? globalThis.fetch
+    const feishuUserAuthManager =
+      dependencies.feishuUserAuthManager
+      ?? createFeishuUserAuthManager({
+        storageRoot,
+        fetchFn: sharedFetchFn
+      })
     const managerFetchFn = dependencies.fetchFn ?? globalThis.fetch
 
     if (!command) {
@@ -336,6 +358,60 @@ export async function executeCli({
         receiveId,
         text
       })
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          result
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'channel feishu-user-auth-status') {
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          status: await feishuUserAuthManager.describeStatus()
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'channel feishu-user-auth-url') {
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          oauth: feishuUserAuthManager.buildAuthorizeUrl({
+            state: options.state ?? null
+          })
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'channel feishu-user-auth-exchange') {
+      const result = sanitizeFeishuUserAuthResult(
+        await feishuUserAuthManager.exchangeCode({
+          code: requireOption(options, 'code')
+        })
+      )
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          result
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'channel feishu-user-auth-refresh') {
+      const result = sanitizeFeishuUserAuthResult(
+        await feishuUserAuthManager.refreshAccessToken({
+          force: true
+        })
+      )
 
       return {
         exitCode: 0,
@@ -694,18 +770,31 @@ export async function executeCli({
           afterId: options['after-id'] ?? null,
           limit: 1
         })
-        request = requests[0] ?? null
+        const candidate = requests[0] ?? null
 
-        if (!request) {
+        if (!candidate) {
           await waitForMs(pollIntervalMs)
+          continue
         }
-      }
 
-      if (request && options['claim-by']) {
-        request = await coworkerStore.claimRequest(request.id, {
-          claimedBy: options['claim-by'],
-          location: options.location ?? null
-        })
+        if (!options['claim-by']) {
+          request = candidate
+          continue
+        }
+
+        try {
+          request = await coworkerStore.claimRequest(candidate.id, {
+            claimedBy: options['claim-by'],
+            location: options.location ?? null
+          })
+        } catch (error) {
+          if (error?.code === 'COWORKER_REQUEST_NOT_PENDING') {
+            request = null
+            continue
+          }
+
+          throw error
+        }
       }
 
       return {

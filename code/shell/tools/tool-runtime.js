@@ -14,6 +14,7 @@ import {
   createFeishuApiClient,
   describeFeishuChannelConfig
 } from '../channels/feishu/feishu-gateway.js'
+import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
 import { createDynamicToolRegistry } from './dynamic-tool-registry.js'
 
 const execFileAsync = promisify(execFile)
@@ -39,6 +40,51 @@ function normalizeString(value) {
 
   const normalized = String(value).trim()
   return normalized === '' ? null : normalized
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.code === 'ABORT_ERR'
+}
+
+function mergeFeishuRequestOptions(sdk, baseRequestOptions, callRequestOptions) {
+  if (baseRequestOptions && callRequestOptions && typeof sdk?.withAll === 'function') {
+    return sdk.withAll([baseRequestOptions, callRequestOptions])
+  }
+
+  return callRequestOptions ?? baseRequestOptions ?? undefined
+}
+
+function wrapFeishuClientWithRequestOptions(target, sdk, baseRequestOptions, cache = new WeakMap()) {
+  if (!baseRequestOptions || !target || typeof target !== 'object') {
+    return target
+  }
+
+  if (cache.has(target)) {
+    return cache.get(target)
+  }
+
+  const proxy = new Proxy(target, {
+    get(object, property, receiver) {
+      const value = Reflect.get(object, property, receiver)
+
+      if (typeof value === 'function') {
+        return (payload, callRequestOptions) => value.call(
+          object,
+          payload,
+          mergeFeishuRequestOptions(sdk, baseRequestOptions, callRequestOptions)
+        )
+      }
+
+      if (value && typeof value === 'object') {
+        return wrapFeishuClientWithRequestOptions(value, sdk, baseRequestOptions, cache)
+      }
+
+      return value
+    }
+  })
+
+  cache.set(target, proxy)
+  return proxy
 }
 
 function normalizeToolCategory(value, fallback = 'internal') {
@@ -317,7 +363,7 @@ function createDefaultSpecs(workspaceRoot) {
         required: ['path']
       },
       side_effects: false,
-      async handler(input) {
+      async handler(input, { signal } = {}) {
         const path = normalizePath(workspaceRoot, input.path)
         const content = await readFile(path, 'utf8')
 
@@ -357,7 +403,7 @@ function createDefaultSpecs(workspaceRoot) {
         required: ['pattern']
       },
       side_effects: false,
-      async handler(input) {
+      async handler(input, { signal } = {}) {
         if (!input.pattern) {
           throw new Error('Missing required tool input: pattern')
         }
@@ -384,7 +430,7 @@ function createDefaultSpecs(workspaceRoot) {
         required: ['path', 'content']
       },
       side_effects: true,
-      async handler(input) {
+      async handler(input, { signal } = {}) {
         const path = normalizePath(workspaceRoot, input.path)
         await mkdir(dirname(path), { recursive: true })
         await writeFile(path, String(input.content ?? ''), 'utf8')
@@ -404,7 +450,7 @@ function createDefaultSpecs(workspaceRoot) {
         required: ['command']
       },
       side_effects: true,
-      async handler(input) {
+      async handler(input, { signal } = {}) {
         if (!input.command) {
           throw new Error('Missing required tool input: command')
         }
@@ -418,6 +464,7 @@ function createDefaultSpecs(workspaceRoot) {
         const cwd = input.cwd ? normalizePath(workspaceRoot, input.cwd) : workspaceRoot
         const { stdout, stderr } = await execFileAsync(shell, ['-c', input.command], {
           cwd,
+          ...(signal ? { signal } : {}),
           timeout: Number.isInteger(input.timeout_ms) ? input.timeout_ms : 10000,
           maxBuffer: 1024 * 1024
         })
@@ -502,7 +549,7 @@ function createCodexSpecs(workspaceRoot, codexCommand) {
         type: 'object'
       },
       side_effects: false,
-      async handler(input = {}) {
+      async handler(input = {}, { signal } = {}) {
         const cwd = normalizeToolCwd(workspaceRoot, input.cwd)
         const args = ['exec', 'review']
 
@@ -528,6 +575,7 @@ function createCodexSpecs(workspaceRoot, codexCommand) {
 
         const { stdout, stderr } = await execFileAsync(codexCommand, args, {
           cwd,
+          ...(signal ? { signal } : {}),
           timeout: Number.isInteger(input.timeout_ms) ? input.timeout_ms : 60000,
           maxBuffer: 1024 * 1024 * 4
         })
@@ -552,7 +600,7 @@ function createCodexSpecs(workspaceRoot, codexCommand) {
         required: ['instruction']
       },
       side_effects: true,
-      async handler(input = {}) {
+      async handler(input = {}, { signal } = {}) {
         if (!input.instruction) {
           throw new Error('Missing required tool input: instruction')
         }
@@ -582,6 +630,7 @@ function createCodexSpecs(workspaceRoot, codexCommand) {
 
         const { stdout, stderr } = await execFileAsync(codexCommand, args, {
           cwd,
+          ...(signal ? { signal } : {}),
           timeout: Number.isInteger(input.timeout_ms) ? input.timeout_ms : 120000,
           maxBuffer: 1024 * 1024 * 4
         })
@@ -1299,18 +1348,43 @@ function createNewsSpecs(storageRoot, fetchFn) {
 }
 
 function createChannelSpecs({
+  storageRoot,
   workspaceRoot,
+  fetchFn = globalThis.fetch,
   feishuApiClientFactory = createFeishuApiClient,
-  feishuConfigDescriber = describeFeishuChannelConfig
+  feishuConfigDescriber = describeFeishuChannelConfig,
+  feishuUserAuthManager = null
 } = {}) {
-  async function resolveFeishuWorkspaceClient() {
+  const userAuthManager = feishuUserAuthManager ?? createFeishuUserAuthManager({
+    storageRoot,
+    fetchFn
+  })
+
+  async function resolveFeishuWorkspaceClient({
+    identity = 'auto'
+  } = {}) {
     const config = feishuConfigDescriber()
 
     if (!config.ready) {
       throw new Error('Feishu credentials are not configured')
     }
 
-    return feishuApiClientFactory()
+    const bundle = await feishuApiClientFactory()
+    const sdk = bundle.sdk ?? null
+    const authResolution = userAuthManager && sdk
+      ? await userAuthManager.resolveRequestOptions(sdk, { identity })
+      : {
+          active_identity: 'app',
+          request_options: null,
+          user: null
+        }
+
+    return {
+      ...bundle,
+      client: wrapFeishuClientWithRequestOptions(bundle.client, sdk, authResolution.request_options),
+      auth_identity: authResolution.active_identity,
+      user: authResolution.user ?? null
+    }
   }
 
   async function listFeishuScopes() {
@@ -1325,7 +1399,9 @@ function createChannelSpecs({
       }
     }
 
-    const { client } = await resolveFeishuWorkspaceClient()
+    const { client } = await resolveFeishuWorkspaceClient({
+      identity: 'app'
+    })
     const response = await client.application.scope.list({})
     const scopes = Array.isArray(response.data?.scopes) ? response.data.scopes : []
     const granted = scopes.filter((scope) => scope.grant_status === 1)
@@ -1451,9 +1527,12 @@ function createChannelSpecs({
           }
         }
 
+        const auth = await userAuthManager.describeStatus()
+
         return {
           config,
           scopes,
+          identity: auth,
           capabilities: [
             {
               capability: 'docs',
@@ -2619,7 +2698,7 @@ function buildDynamicToolSpec({
     permission_class: entry.permission_class,
     input_schema: entry.input_schema,
     side_effects: entry.side_effects,
-    async handler(input = {}) {
+    async handler(input = {}, { signal } = {}) {
       const shell = String(
         process.env.NEWAGENT_SHELL
         ?? process.env.SHELL
@@ -2636,6 +2715,7 @@ function buildDynamicToolSpec({
       const { stdout, stderr } = await execFileAsync(shell, ['-lc', entry.command], {
         cwd,
         env,
+        ...(signal ? { signal } : {}),
         timeout: Number.isInteger(input.timeout_ms) ? input.timeout_ms : 60000,
         maxBuffer: 1024 * 1024 * 4
       })
@@ -2834,7 +2914,8 @@ export function createToolRuntime({
   hookBus = null,
   managerProfile = createRemoteServerManagerProfile(),
   feishuApiClientFactory = createFeishuApiClient,
-  feishuConfigDescriber = describeFeishuChannelConfig
+  feishuConfigDescriber = describeFeishuChannelConfig,
+  feishuUserAuthManager = null
 }) {
   if (typeof fetchFn !== 'function') {
     throw new Error('A fetch implementation is required for project probe tools')
@@ -2882,9 +2963,12 @@ export function createToolRuntime({
     .concat(withToolCategory(createServerOpsSpecs(storageRoot, fetchFn, managerProfile), 'server_ops'))
     .concat(withToolCategory(createNewsSpecs(storageRoot, fetchFn), 'news'))
     .concat(withToolCategory(createChannelSpecs({
+      storageRoot,
       workspaceRoot,
+      fetchFn,
       feishuApiClientFactory,
-      feishuConfigDescriber
+      feishuConfigDescriber,
+      feishuUserAuthManager
     }), 'channel'))
     .concat(withToolCategory(createWebSpecs(fetchFn), 'web'))
     .concat(withToolCategory(createCodexSpecs(workspaceRoot, codexCommand), 'codex'))
@@ -3087,7 +3171,7 @@ export function createToolRuntime({
 
     const dynamicEntry = await dynamicToolRegistry.getTool(toolName)
 
-    if (!dynamicEntry || ['rejected', 'retired'].includes(dynamicEntry.review_status)) {
+    if (!dynamicEntry || ['pending_review', 'rejected', 'retired'].includes(dynamicEntry.review_status)) {
       return null
     }
 
@@ -3098,10 +3182,32 @@ export function createToolRuntime({
     })
   }
 
-  async function executeTool({ sessionId = null, stepId = null, toolName, input = {} }) {
+  async function executeTool({
+    sessionId = null,
+    stepId = null,
+    toolName,
+    input = {},
+    abortSignal = null
+  }) {
     const spec = await resolveToolSpec(toolName)
 
     if (!spec) {
+      const dynamicEntry = toolMap.has(toolName)
+        ? null
+        : await dynamicToolRegistry.getTool(toolName)
+
+      if (dynamicEntry?.review_status === 'pending_review') {
+        return {
+          status: 'error',
+          tool_name: toolName,
+          permission_class: dynamicEntry.permission_class ?? null,
+          error: {
+            message: `Dynamic tool is pending review: ${toolName}`,
+            code: 'dynamic_tool_pending_review'
+          }
+        }
+      }
+
       return {
         status: 'error',
         tool_name: toolName,
@@ -3181,7 +3287,8 @@ export function createToolRuntime({
     try {
       const output = await spec.handler(input, {
         sessionId,
-        stepId
+        stepId,
+        signal: abortSignal
       })
 
       if (!toolMap.has(toolName)) {
@@ -3216,6 +3323,39 @@ export function createToolRuntime({
         output
       }
     } catch (error) {
+      if (isAbortError(error)) {
+        if (sessionId) {
+          await sessionStore.appendTimelineEvent(sessionId, {
+            stepId,
+            kind: 'tool_aborted',
+            payload: {
+              tool_name: toolName,
+              message: error.message
+            }
+          })
+        }
+        await emitHook({
+          name: 'tool.aborted',
+          sessionId,
+          payload: {
+            step_id: stepId ?? null,
+            tool_name: toolName,
+            permission_class: spec.permission_class,
+            message: error.message
+          }
+        })
+
+        return {
+          status: 'aborted',
+          tool_name: toolName,
+          permission_class: spec.permission_class,
+          error: {
+            message: error.message,
+            code: 'tool_aborted'
+          }
+        }
+      }
+
       if (sessionId) {
         await sessionStore.appendTimelineEvent(sessionId, {
           stepId,
