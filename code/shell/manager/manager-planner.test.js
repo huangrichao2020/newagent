@@ -45,6 +45,9 @@ test('buildManagerPlanningSystemPrompt constrains change-summary requests and de
   assert.match(prompt, /validates the claimed capability directly/)
   assert.match(prompt, /depends_on uses 1-based step references/)
   assert.match(prompt, /do not write it into the formal registry until the operator confirms/)
+  assert.match(prompt, /stable built-in tool/)
+  assert.match(prompt, /step notes must carry machine-readable inputs/)
+  assert.match(prompt, /document_id.*folder_token.*app_token/)
 })
 
 test('buildManagerPlanningPrompt includes the operator request and project inventory', () => {

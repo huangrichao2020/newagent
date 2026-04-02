@@ -61,6 +61,393 @@ function extractPathLikeToken(value) {
   return match ? match[1] : null
 }
 
+function extractQuotedStrings(value) {
+  const text = String(value ?? '')
+  const matches = []
+  const patterns = [
+    /《([^》]+)》/gu,
+    /“([^”]+)”/gu,
+    /「([^」]+)」/gu,
+    /『([^』]+)』/gu,
+    /"([^"]+)"/gu
+  ]
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const content = cleanString(match[1])
+
+      if (content) {
+        matches.push(content)
+      }
+    }
+  }
+
+  return [...new Set(matches)]
+}
+
+function parseStructuredStepMetadata(step) {
+  const rawText = [
+    step?.title ?? '',
+    step?.notes ?? ''
+  ].filter(Boolean).join('\n')
+  const metadata = {}
+
+  for (const line of rawText.split('\n')) {
+    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*[:=：]\s*(.+?)\s*$/u)
+
+    if (!match) {
+      continue
+    }
+
+    metadata[match[1].toLowerCase()] = match[2]
+  }
+
+  return metadata
+}
+
+function getStructuredMetadataValue(metadata, keys) {
+  for (const key of keys) {
+    const value = cleanString(metadata[key.toLowerCase()])
+
+    if (value) {
+      return value
+    }
+  }
+
+  return null
+}
+
+function parseStructuredJsonValue(value) {
+  const normalized = cleanString(value)
+
+  if (!normalized) {
+    return null
+  }
+
+  try {
+    return JSON.parse(normalized)
+  } catch {
+    try {
+      return JSON.parse(extractJsonObject(normalized))
+    } catch {
+      return null
+    }
+  }
+}
+
+function selectFeishuWorkspaceToolForStep({ step, project }) {
+  const rawText = [
+    step?.title ?? '',
+    step?.notes ?? ''
+  ].filter(Boolean).join('\n')
+  const haystack = rawText.toLowerCase()
+
+  if (!/(飞书|feishu|文档|docx|云盘|drive|知识库|wiki|多维表格|bitable)/u.test(haystack)) {
+    return null
+  }
+
+  const metadata = parseStructuredStepMetadata(step)
+  const quotedStrings = extractQuotedStrings(rawText)
+  const titleValue = getStructuredMetadataValue(metadata, ['title', 'name']) ?? quotedStrings[0] ?? null
+  const contentValue = getStructuredMetadataValue(metadata, ['content', 'body', 'markdown', 'html'])
+  const contentType = getStructuredMetadataValue(metadata, ['content_type', 'content-type'])
+    ?? (Object.prototype.hasOwnProperty.call(metadata, 'html') ? 'html' : 'markdown')
+  const documentId = getStructuredMetadataValue(metadata, ['document_id', 'doc_id'])
+  const blockId = getStructuredMetadataValue(metadata, ['block_id'])
+  const folderToken = getStructuredMetadataValue(metadata, ['folder_token'])
+  const parentNode = getStructuredMetadataValue(metadata, ['parent_node']) ?? folderToken
+  const fileToken = getStructuredMetadataValue(metadata, ['file_token'])
+  const filePath = getStructuredMetadataValue(metadata, ['file_path'])
+  const fileName = getStructuredMetadataValue(metadata, ['file_name'])
+  const fileType = getStructuredMetadataValue(metadata, ['type'])
+  const spaceId = getStructuredMetadataValue(metadata, ['space_id'])
+  const nodeToken = getStructuredMetadataValue(metadata, ['node_token'])
+  const parentNodeToken = getStructuredMetadataValue(metadata, ['parent_node_token'])
+  const targetParentToken = getStructuredMetadataValue(metadata, ['target_parent_token'])
+  const targetSpaceId = getStructuredMetadataValue(metadata, ['target_space_id'])
+  const objToken = getStructuredMetadataValue(metadata, ['obj_token'])
+  const objType = getStructuredMetadataValue(metadata, ['obj_type'])
+    ?? (/(知识库|wiki)/u.test(haystack) && /(文档|docx|page)/u.test(haystack) ? 'docx' : null)
+  const appToken = getStructuredMetadataValue(metadata, ['app_token'])
+  const tableId = getStructuredMetadataValue(metadata, ['table_id'])
+  const recordId = getStructuredMetadataValue(metadata, ['record_id'])
+  const defaultViewName = getStructuredMetadataValue(metadata, ['default_view_name'])
+  const timeZone = getStructuredMetadataValue(metadata, ['time_zone'])
+  const fieldsValue = parseStructuredJsonValue(getStructuredMetadataValue(metadata, ['fields']))
+  const tableValue = parseStructuredJsonValue(getStructuredMetadataValue(metadata, ['table']))
+
+  if (/(文档|docx)/u.test(haystack) && !/(知识库|wiki)/u.test(haystack)) {
+    if (/(追加|写入|补充|append|write|更新内容)/u.test(haystack) && documentId && contentValue) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_doc_write',
+        tool_input: {
+          document_id: documentId,
+          block_id: blockId,
+          content: contentValue,
+          content_type: contentType
+        }
+      }
+    }
+
+    if (/(查看|读取|打开|获取|get|load|原文|内容)/u.test(haystack) && documentId) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_doc_get',
+        tool_input: {
+          document_id: documentId,
+          include_raw_content: true
+        }
+      }
+    }
+
+    if (/(创建|新建|建立|新增|create)/u.test(haystack)) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_doc_create',
+        tool_input: {
+          title: titleValue,
+          folder_token: folderToken,
+          content: contentValue,
+          content_type: contentType
+        }
+      }
+    }
+  }
+
+  if (/(云盘|drive)/u.test(haystack)) {
+    if (/(上传|upload)/u.test(haystack) && parentNode && (filePath || contentValue)) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_file_upload',
+        tool_input: {
+          parent_node: parentNode,
+          file_path: filePath,
+          file_name: fileName,
+          content: filePath ? undefined : contentValue
+        }
+      }
+    }
+
+    if (/(创建|新建|建立|新增|create)/u.test(haystack) && /(目录|文件夹|folder)/u.test(haystack) && folderToken && titleValue) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_drive_create_folder',
+        tool_input: {
+          folder_token: folderToken,
+          name: titleValue
+        }
+      }
+    }
+
+    if (/(移动|move)/u.test(haystack) && fileToken && folderToken) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_drive_move',
+        tool_input: {
+          file_token: fileToken,
+          folder_token: folderToken,
+          type: fileType
+        }
+      }
+    }
+
+    if (/(列表|列出|查看|浏览|list)/u.test(haystack)) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_drive_list',
+        tool_input: {
+          folder_token: folderToken
+        }
+      }
+    }
+  }
+
+  if (/(知识库|wiki)/u.test(haystack)) {
+    if (/(改标题|重命名|rename|标题改成|update title)/u.test(haystack) && spaceId && nodeToken && titleValue) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_wiki_update_title',
+        tool_input: {
+          space_id: spaceId,
+          node_token: nodeToken,
+          title: titleValue
+        }
+      }
+    }
+
+    if (/(挂到|挂载|移入|move doc|导入文档|导入知识库)/u.test(haystack) && spaceId && objToken && objType) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_wiki_move_doc',
+        tool_input: {
+          space_id: spaceId,
+          obj_token: objToken,
+          obj_type: objType,
+          parent_wiki_token: parentNodeToken
+        }
+      }
+    }
+
+    if (/(移动|move)/u.test(haystack) && spaceId && nodeToken) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_wiki_move_node',
+        tool_input: {
+          space_id: spaceId,
+          node_token: nodeToken,
+          target_parent_token: targetParentToken,
+          target_space_id: targetSpaceId
+        }
+      }
+    }
+
+    if (/(创建|新建|建立|新增|create)/u.test(haystack) && spaceId && objType) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_wiki_create_node',
+        tool_input: {
+          space_id: spaceId,
+          obj_type: objType,
+          parent_node_token: parentNodeToken,
+          title: titleValue
+        }
+      }
+    }
+
+    if (/(列表|列出|查看|浏览|list)/u.test(haystack) && /(空间|space)/u.test(haystack)) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_wiki_list_spaces',
+        tool_input: {}
+      }
+    }
+  }
+
+  if (/(多维表格|bitable)/u.test(haystack)) {
+    if (/(更新|修改|update)/u.test(haystack) && /(记录|record)/u.test(haystack) && appToken && tableId && recordId && fieldsValue) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_record_update',
+        tool_input: {
+          app_token: appToken,
+          table_id: tableId,
+          record_id: recordId,
+          fields: fieldsValue
+        }
+      }
+    }
+
+    if (/(新增|创建|写入|添加|create)/u.test(haystack) && /(记录|record)/u.test(haystack) && appToken && tableId && fieldsValue) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_record_create',
+        tool_input: {
+          app_token: appToken,
+          table_id: tableId,
+          fields: fieldsValue
+        }
+      }
+    }
+
+    if (/(列表|列出|查看|浏览|list)/u.test(haystack) && /(记录|record)/u.test(haystack) && appToken && tableId) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_list_records',
+        tool_input: {
+          app_token: appToken,
+          table_id: tableId
+        }
+      }
+    }
+
+    if (/(创建|新建|建立|新增|create)/u.test(haystack) && /(表|table)/u.test(haystack) && appToken) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_create_table',
+        tool_input: {
+          app_token: appToken,
+          table: tableValue ?? undefined,
+          name: tableValue ? undefined : titleValue,
+          default_view_name: defaultViewName
+        }
+      }
+    }
+
+    if (/(列表|列出|查看|浏览|list)/u.test(haystack) && /(表|table)/u.test(haystack) && appToken) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_list_tables',
+        tool_input: {
+          app_token: appToken
+        }
+      }
+    }
+
+    if (/(查看|读取|获取|get|load)/u.test(haystack) && /(应用|app)/u.test(haystack) && appToken) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_get_app',
+        tool_input: {
+          app_token: appToken
+        }
+      }
+    }
+
+    if (/(创建|新建|建立|新增|create)/u.test(haystack)) {
+      return {
+        supported: true,
+        action: 'tool',
+        project,
+        tool_name: 'channel_feishu_bitable_create_app',
+        tool_input: {
+          name: titleValue,
+          folder_token: folderToken,
+          time_zone: timeZone
+        }
+      }
+    }
+  }
+
+  return null
+}
+
 function latestManagerProjectKeys(snapshot) {
   for (let index = snapshot.timeline.length - 1; index >= 0; index -= 1) {
     const event = snapshot.timeline[index]
@@ -440,6 +827,117 @@ function summarizeSelectionOutput({ toolName, output }) {
     ].join('\n')
   }
 
+  if (toolName === 'channel_feishu_doc_create') {
+    return [
+      '已创建飞书文档',
+      `document_id=${output.document?.document_id ?? 'null'}`,
+      `title=${output.document?.title ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_doc_get') {
+    return [
+      '已读取飞书文档',
+      `document_id=${output.document?.document_id ?? 'null'}`,
+      `has_raw_content=${output.raw_content ? 'true' : 'false'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_doc_write') {
+    return [
+      '已写入飞书文档',
+      `target_block_id=${output.target_block_id ?? 'null'}`,
+      `descendants=${output.descendant_count ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_drive_list') {
+    return [
+      '已读取飞书云盘目录',
+      `files=${output.files?.length ?? 0}`,
+      `has_more=${output.has_more ?? false}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_drive_create_folder') {
+    return [
+      '已创建飞书云盘目录',
+      `token=${output.token ?? output.file_token ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_drive_move') {
+    return '已移动飞书云盘文件'
+  }
+
+  if (toolName === 'channel_feishu_file_upload') {
+    return [
+      '已上传飞书文件',
+      `file_token=${output.file_token ?? 'null'}`,
+      `file_name=${output.file_name ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_wiki_list_spaces') {
+    return [
+      '已读取飞书知识库空间',
+      `items=${output.items?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_wiki_create_node') {
+    return [
+      '已创建飞书知识库节点',
+      `node_token=${output.node?.node_token ?? 'null'}`,
+      `title=${output.node?.title ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_wiki_move_node' || toolName === 'channel_feishu_wiki_move_doc') {
+    return `已完成飞书知识库对象移动 ${toolName}`
+  }
+
+  if (toolName === 'channel_feishu_wiki_update_title') {
+    return [
+      '已更新飞书知识库标题',
+      `node_token=${output.node_token ?? 'null'}`,
+      `title=${output.title ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_bitable_create_app') {
+    return [
+      '已创建飞书多维表格应用',
+      `app_token=${output.app?.app_token ?? 'null'}`,
+      `name=${output.app?.name ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_bitable_get_app') {
+    return [
+      '已读取飞书多维表格应用',
+      `app_token=${output.app?.app_token ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_bitable_create_table') {
+    return '已创建飞书多维表格数据表'
+  }
+
+  if (toolName === 'channel_feishu_bitable_list_tables' || toolName === 'channel_feishu_bitable_list_records') {
+    return [
+      `已读取飞书多维表格 ${toolName}`,
+      `items=${output.items?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_bitable_record_create' || toolName === 'channel_feishu_bitable_record_update') {
+    return [
+      `已写入飞书多维表格 ${toolName}`,
+      `record_id=${output.record?.record_id ?? 'null'}`
+    ].join('\n')
+  }
+
   if (toolName === 'news_source_list') {
     return [
       '已读取资讯源清单',
@@ -512,6 +1010,10 @@ export function selectManagerToolForStep({
   const rawStepText = `${step.title ?? ''} ${step.notes ?? ''}`
   const explicitPort = extractPortFromText(rawStepText)
   const explicitPath = extractPathLikeToken(rawStepText)
+  const feishuToolSelection = selectFeishuWorkspaceToolForStep({
+    step,
+    project
+  })
 
   if (normalizedKind === 'report') {
     return {
@@ -573,6 +1075,10 @@ export function selectManagerToolForStep({
         })
       }
     }
+  }
+
+  if (feishuToolSelection) {
+    return feishuToolSelection
   }
 
   if (normalizedKind === 'operate' || normalizedKind === 'deploy') {

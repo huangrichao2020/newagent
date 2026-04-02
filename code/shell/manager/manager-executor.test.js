@@ -185,6 +185,100 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
   assert.equal(infrastructureSelection.tool_input.path_prefix, '/apps/chaochao/')
 })
 
+test('selectManagerToolForStep maps Feishu workspace CRUD requests to concrete tools', () => {
+  const projects = []
+
+  const docCreateSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '创建飞书文档《今晚日报》',
+      notes: 'folder_token=fldcn_parent\ncontent=# 今晚安排\ncontent_type=markdown'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const docWriteSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '往飞书文档追加内容',
+      notes: 'document_id=doccn123\ncontent=## 最新进展'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const driveUploadSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '上传 README 到飞书云盘',
+      notes: 'parent_node=fldcn_parent\nfile_path=./README.md'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const wikiCreateSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '在飞书知识库创建文档《作战手册》',
+      notes: 'space_id=spc123'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const bitableCreateSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '创建飞书多维表格《任务看板》'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const bitableRecordSelection = selectManagerToolForStep({
+    step: {
+      kind: 'operate',
+      title: '在飞书多维表格里新增记录',
+      notes: 'app_token=appcn123\ntable_id=tblcn456\nfields={"状态":"进行中","负责人":"老板"}'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+
+  assert.equal(docCreateSelection.action, 'tool')
+  assert.equal(docCreateSelection.tool_name, 'channel_feishu_doc_create')
+  assert.equal(docCreateSelection.tool_input.title, '今晚日报')
+  assert.equal(docCreateSelection.tool_input.folder_token, 'fldcn_parent')
+  assert.equal(docCreateSelection.tool_input.content, '# 今晚安排')
+  assert.equal(docCreateSelection.tool_input.content_type, 'markdown')
+
+  assert.equal(docWriteSelection.action, 'tool')
+  assert.equal(docWriteSelection.tool_name, 'channel_feishu_doc_write')
+  assert.equal(docWriteSelection.tool_input.document_id, 'doccn123')
+  assert.equal(docWriteSelection.tool_input.content, '## 最新进展')
+
+  assert.equal(driveUploadSelection.action, 'tool')
+  assert.equal(driveUploadSelection.tool_name, 'channel_feishu_file_upload')
+  assert.equal(driveUploadSelection.tool_input.parent_node, 'fldcn_parent')
+  assert.equal(driveUploadSelection.tool_input.file_path, './README.md')
+
+  assert.equal(wikiCreateSelection.action, 'tool')
+  assert.equal(wikiCreateSelection.tool_name, 'channel_feishu_wiki_create_node')
+  assert.equal(wikiCreateSelection.tool_input.space_id, 'spc123')
+  assert.equal(wikiCreateSelection.tool_input.obj_type, 'docx')
+  assert.equal(wikiCreateSelection.tool_input.title, '作战手册')
+
+  assert.equal(bitableCreateSelection.action, 'tool')
+  assert.equal(bitableCreateSelection.tool_name, 'channel_feishu_bitable_create_app')
+  assert.equal(bitableCreateSelection.tool_input.name, '任务看板')
+
+  assert.equal(bitableRecordSelection.action, 'tool')
+  assert.equal(bitableRecordSelection.tool_name, 'channel_feishu_bitable_record_create')
+  assert.equal(bitableRecordSelection.tool_input.app_token, 'appcn123')
+  assert.equal(bitableRecordSelection.tool_input.table_id, 'tblcn456')
+  assert.deepEqual(bitableRecordSelection.tool_input.fields, {
+    状态: '进行中',
+    负责人: '老板'
+  })
+})
+
 test('selectManagerToolForStep maps review, repair, and report steps to manager actions', async () => {
   const { workspaceRoot, managerProfile } = await createHarness()
   const projects = [

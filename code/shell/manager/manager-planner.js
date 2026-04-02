@@ -132,6 +132,8 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     'When operator preferences or operating rules are provided, follow them explicitly.',
     'When recent transcript or long-term memory is provided, preserve continuity with prior turns.',
     'If the request is ambiguous, include an initial inspection step instead of guessing.',
+    'If a request can be fulfilled by one stable built-in tool family such as project_*, infrastructure_*, server_ops_*, news_*, channel_feishu_*, or tool_catalog_*, prefer that tool-oriented step over generic shell execution.',
+    'When a stable built-in tool needs structured inputs, step notes must carry machine-readable inputs as key=value lines, for example document_id, folder_token, parent_node, space_id, app_token, table_id, record_id, or fields JSON.',
     'If the operator is asking what changed, what was upgraded, or what new capabilities were added, do not pivot to unrelated service-health checks.',
     'When the operator asks to verify or assess recent changes, include at least one step that validates the claimed capability directly instead of only checking generic runtime health.',
     'depends_on uses 1-based step references in the JSON output and must only point to earlier steps.',
