@@ -77,7 +77,9 @@ export function createRemoteServerManagerProfile({
         connection_mode: 'duplex_long_poll',
         remote_relay_required: false,
         target: 'codex_mac_local',
-        location: 'mac_local_codex'
+        location: 'mac_local_codex',
+        authority: 'advisory_only',
+        auto_execute_allowed: false
       }
     },
     model_routing: {
@@ -142,6 +144,9 @@ export function createRemoteServerManagerProfile({
     background_precompute: {
       enabled: enableBackgroundPrecompute,
       model: backgroundPrecomputeModel
+    },
+    registry_policy: {
+      auto_discovery_write_requires_confirmation: true
     },
     codex_integration: {
       allow_review: allowReview,

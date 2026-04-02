@@ -34,6 +34,7 @@ test('createRequest persists one pending coworker request and listRequests can f
   })
 
   assert.equal(created.status, 'pending')
+  assert.equal(created.authority, 'advisory_only')
   assert.equal(listed.length, 1)
   assert.equal(listed[0].id, created.id)
   assert.equal(listed[0].context, '当前正在收紧引用消息优先级。')

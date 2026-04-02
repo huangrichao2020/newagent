@@ -134,7 +134,8 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     'If the request is ambiguous, include an initial inspection step instead of guessing.',
     'If the operator is asking what changed, what was upgraded, or what new capabilities were added, do not pivot to unrelated service-health checks.',
     'When the operator asks to verify or assess recent changes, include at least one step that validates the claimed capability directly instead of only checking generic runtime health.',
-    'depends_on uses 1-based step references in the JSON output and must only point to earlier steps.'
+    'depends_on uses 1-based step references in the JSON output and must only point to earlier steps.',
+    'If you discover a possible new project, service, route, port, or publish path, report it as a candidate first and do not write it into the formal registry until the operator confirms.'
   ]
 
   if (!managerProfile.codex_integration.allow_review) {

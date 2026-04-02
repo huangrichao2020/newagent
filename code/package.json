@@ -3,13 +3,15 @@
   "private": true,
   "type": "module",
   "bin": {
-    "newagent": "./bin/newagent.js"
+    "newagent": "./bin/newagent.js",
+    "newagent-coworker": "./bin/newagent-coworker.js"
   },
   "scripts": {
     "test": "node --test",
     "test:workers": "python3 -m unittest discover -s ./workers/scrapling_worker/tests -v",
     "test:all": "npm run test && npm run test:workers",
     "cli": "node ./bin/newagent.js",
+    "coworker:listen": "node ./bin/newagent-coworker.js listen",
     "manager:bootstrap": "node ./bin/newagent.js manager bootstrap --storage-root ./storage --json",
     "manager:intake": "node ./bin/newagent.js manager intake-message --storage-root ./storage --text \"检查远程项目当前状态\" --json",
     "manager:serve": "node ./bin/newagent.js manager feishu-serve --storage-root ./storage",
