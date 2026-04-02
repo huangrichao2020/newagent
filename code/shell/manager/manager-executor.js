@@ -854,11 +854,34 @@ export function createManagerExecutor({
     sessionId,
     currentInput = null,
     maxSteps = 4,
-    skillRefs = []
+    skillRefs = [],
+    onProgress = null,
+    shouldStop = null
   }) {
     const runs = []
 
+    async function finalizeLoop(statusOverride = null) {
+      const finalSnapshot = await sessionStore.loadSession(sessionId)
+      const latestReport = [...runs]
+        .reverse()
+        .find((run) => run.report_text)?.report_text ?? null
+
+      return {
+        status: statusOverride ?? runs.at(-1)?.status ?? 'error',
+        runs,
+        report_text: latestReport,
+        session: finalSnapshot.session,
+        task: finalSnapshot.task,
+        plan_steps: finalSnapshot.plan_steps,
+        approvals: finalSnapshot.approvals
+      }
+    }
+
     for (let index = 0; index < maxSteps; index += 1) {
+      if (typeof shouldStop === 'function' && shouldStop()) {
+        return finalizeLoop('stopped')
+      }
+
       const result = await executeCurrentManagerStep({
         sessionId,
         currentInput,
@@ -866,6 +889,18 @@ export function createManagerExecutor({
       })
 
       runs.push(result)
+
+      if (typeof onProgress === 'function') {
+        await onProgress({
+          step_index: index + 1,
+          result,
+          runs: [...runs]
+        })
+      }
+
+      if (typeof shouldStop === 'function' && shouldStop()) {
+        return finalizeLoop('stopped')
+      }
 
       if (!['planned', 'completed'].includes(result.status)) {
         break
@@ -876,20 +911,7 @@ export function createManagerExecutor({
       }
     }
 
-    const finalSnapshot = await sessionStore.loadSession(sessionId)
-    const latestReport = [...runs]
-      .reverse()
-      .find((run) => run.report_text)?.report_text ?? null
-
-    return {
-      status: runs.at(-1)?.status ?? 'error',
-      runs,
-      report_text: latestReport,
-      session: finalSnapshot.session,
-      task: finalSnapshot.task,
-      plan_steps: finalSnapshot.plan_steps,
-      approvals: finalSnapshot.approvals
-    }
+    return finalizeLoop()
   }
 
   async function runSafeInspectLoop({

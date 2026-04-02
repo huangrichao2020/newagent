@@ -26,6 +26,14 @@ function parseMessageContent(rawContent) {
   }
 }
 
+function stringifyMessageContent(content) {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  return JSON.stringify(content)
+}
+
 function normalizeIncomingEvent(eventEnvelope) {
   const event = eventEnvelope?.event ?? eventEnvelope ?? {}
   const message = event.message ?? {}
@@ -161,6 +169,22 @@ export function createFeishuGateway({
     receiveId,
     text
   }) {
+    return sendMessage({
+      receiveIdType,
+      receiveId,
+      msgType: 'text',
+      content: {
+        text
+      }
+    })
+  }
+
+  async function sendMessage({
+    receiveIdType = 'chat_id',
+    receiveId,
+    msgType,
+    content
+  }) {
     if (!receiveId) {
       throw new Error('Missing required receiveId')
     }
@@ -171,10 +195,8 @@ export function createFeishuGateway({
       },
       data: {
         receive_id: receiveId,
-        content: JSON.stringify({
-          text
-        }),
-        msg_type: 'text'
+        content: stringifyMessageContent(content),
+        msg_type: msgType
       }
     })
 
@@ -185,6 +207,44 @@ export function createFeishuGateway({
     messageId,
     text
   }) {
+    return replyMessage({
+      messageId,
+      msgType: 'text',
+      content: {
+        text
+      }
+    })
+  }
+
+  async function replyInteractiveCard({
+    messageId,
+    card
+  }) {
+    return replyMessage({
+      messageId,
+      msgType: 'interactive',
+      content: card
+    })
+  }
+
+  async function sendInteractiveCard({
+    receiveIdType = 'chat_id',
+    receiveId,
+    card
+  }) {
+    return sendMessage({
+      receiveIdType,
+      receiveId,
+      msgType: 'interactive',
+      content: card
+    })
+  }
+
+  async function replyMessage({
+    messageId,
+    msgType,
+    content
+  }) {
     if (!messageId) {
       throw new Error('Missing required messageId')
     }
@@ -194,10 +254,43 @@ export function createFeishuGateway({
         message_id: messageId
       },
       data: {
-        content: JSON.stringify({
-          text
-        }),
-        msg_type: 'text'
+        content: stringifyMessageContent(content),
+        msg_type: msgType
+      }
+    })
+
+    return response
+  }
+
+  async function updateTextMessage({
+    messageId,
+    text
+  }) {
+    return updateMessage({
+      messageId,
+      msgType: 'text',
+      content: {
+        text
+      }
+    })
+  }
+
+  async function updateMessage({
+    messageId,
+    msgType,
+    content
+  }) {
+    if (!messageId) {
+      throw new Error('Missing required messageId')
+    }
+
+    const response = await client.im.v1.message.update({
+      path: {
+        message_id: messageId
+      },
+      data: {
+        content: stringifyMessageContent(content),
+        msg_type: msgType
       }
     })
 
@@ -395,8 +488,14 @@ export function createFeishuGateway({
   return {
     getState,
     normalizeIncomingEvent,
+    sendMessage,
     sendTextMessage,
+    sendInteractiveCard,
+    replyMessage,
     replyTextMessage,
+    replyInteractiveCard,
+    updateMessage,
+    updateTextMessage,
     addMessageReaction,
     start,
     close

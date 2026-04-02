@@ -9,6 +9,7 @@ function createFakeSdk({
   const calls = {
     create: [],
     reply: [],
+    update: [],
     reactionCreate: [],
     started: null,
     close: []
@@ -31,6 +32,13 @@ function createFakeSdk({
               if (replyError) {
                 throw replyError
               }
+              return {
+                ok: true,
+                payload
+              }
+            },
+            update: async (payload) => {
+              calls.update.push(payload)
               return {
                 ok: true,
                 payload
@@ -136,6 +144,25 @@ test('replyTextMessage replies to one incoming Feishu message', async () => {
   assert.equal(JSON.parse(calls.reply[0].data.content).text, 'ack')
 })
 
+test('updateTextMessage edits one existing Feishu text message', async () => {
+  const { sdk, calls } = createFakeSdk()
+  const gateway = createFeishuGateway({
+    appId: 'app-id',
+    appSecret: 'app-secret',
+    sdk
+  })
+
+  await gateway.updateTextMessage({
+    messageId: 'om_update_123',
+    text: 'updated reply'
+  })
+
+  assert.equal(calls.update.length, 1)
+  assert.equal(calls.update[0].path.message_id, 'om_update_123')
+  assert.equal(calls.update[0].data.msg_type, 'text')
+  assert.equal(JSON.parse(calls.update[0].data.content).text, 'updated reply')
+})
+
 test('addMessageReaction adds one reaction to the incoming Feishu message', async () => {
   const { sdk, calls } = createFakeSdk()
   const gateway = createFeishuGateway({
@@ -152,6 +179,38 @@ test('addMessageReaction adds one reaction to the incoming Feishu message', asyn
   assert.equal(calls.reactionCreate.length, 1)
   assert.equal(calls.reactionCreate[0].path.message_id, 'om_456')
   assert.equal(calls.reactionCreate[0].data.reaction_type.emoji_type, 'SMILE')
+})
+
+test('replyInteractiveCard replies with one markdown-capable interactive card', async () => {
+  const { sdk, calls } = createFakeSdk()
+  const gateway = createFeishuGateway({
+    appId: 'app-id',
+    appSecret: 'app-secret',
+    sdk
+  })
+
+  await gateway.replyInteractiveCard({
+    messageId: 'om_card_123',
+    card: {
+      header: {
+        title: {
+          tag: 'plain_text',
+          content: '处理完成'
+        }
+      },
+      elements: [
+        {
+          tag: 'markdown',
+          content: '**摘要**\n- ok'
+        }
+      ]
+    }
+  })
+
+  assert.equal(calls.reply.length, 1)
+  assert.equal(calls.reply[0].path.message_id, 'om_card_123')
+  assert.equal(calls.reply[0].data.msg_type, 'interactive')
+  assert.equal(JSON.parse(calls.reply[0].data.content).elements[0].tag, 'markdown')
 })
 
 test('start registers the long-connection message handler and normalizes inbound events', async () => {

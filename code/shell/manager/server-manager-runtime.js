@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { mkdir, rm } from 'node:fs/promises'
-import { createSessionStore } from '../session/session-store.js'
+import { createSessionStore, createUlid } from '../session/session-store.js'
 import { createMemoryStore } from '../memory/memory-store.js'
 import {
   extractFeedbackMemoryCandidates,
@@ -30,10 +30,25 @@ const FEISHU_UNIFIED_CHANNEL_KEY = 'feishu-primary'
 const DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS = 5 * 60 * 60 * 1000
 const DEFAULT_MAINTENANCE_POLL_INTERVAL_MS = 5 * 60 * 1000
 const DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS = 800
+const DEFAULT_FEISHU_RESPONSE_MODE = 'balanced'
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
 const CONFIRMATION_SIGNAL_PATTERN = /^(好|好的|好啊|收到|明白|没问题|可以|行|行的|就这样|就这样吧|按这个来|按这个做|继续|继续吧|yes|perfect|exactly|keepdoingthat)$/u
+
+const DEFAULT_FEISHU_OPERATOR_PROFILE = Object.freeze({
+  response_mode: DEFAULT_FEISHU_RESPONSE_MODE,
+  enable_markdown: true,
+  show_command_hints: true
+})
+
+class FeishuRunStoppedError extends Error {
+  constructor(stage = 'operator_stop_requested') {
+    super(`Feishu run stopped: ${stage}`)
+    this.name = 'FeishuRunStoppedError'
+    this.stage = stage
+  }
+}
 
 function listOperatorMessages(message) {
   if (Array.isArray(message?.batch_messages) && message.batch_messages.length > 0) {
@@ -121,6 +136,266 @@ function cleanText(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function normalizeFeishuResponseMode(value) {
+  const normalized = cleanText(value).toLowerCase()
+
+  if (normalized === 'fast' || normalized === 'thinking' || normalized === 'balanced') {
+    return normalized
+  }
+
+  return DEFAULT_FEISHU_RESPONSE_MODE
+}
+
+function normalizeFeishuOperatorProfile(value = {}) {
+  return {
+    response_mode: normalizeFeishuResponseMode(value.response_mode),
+    enable_markdown: value.enable_markdown !== false,
+    show_command_hints: value.show_command_hints !== false
+  }
+}
+
+function buildFeishuCommandHintText() {
+  return '/fast 简短回复 | /thinking 持续反馈 | /appendmsg 内容 追加建议 | /stop 停止当前轮 | /status 当前状态'
+}
+
+function buildFeishuCommandHintMarkdown() {
+  return '`/fast` 简短回复  `/thinking` 持续反馈  `/appendmsg 内容` 追加建议  `/stop` 停止当前轮  `/status` 当前状态'
+}
+
+function buildFeishuResponseModeLabel(mode) {
+  if (mode === 'fast') {
+    return 'fast / 快回'
+  }
+
+  if (mode === 'thinking') {
+    return 'thinking / 持续反馈'
+  }
+
+  return 'balanced / 常规'
+}
+
+function compactMultilineText(value) {
+  return String(value ?? '')
+    .split('\n')
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .join('；')
+}
+
+function summarizePlanStepsForReply(steps = []) {
+  return steps
+    .map((step, index) => `${index + 1}. ${compactMultilineText(step.title)}`)
+    .filter(Boolean)
+}
+
+function summarizeExecutionRunsForReply(runs = []) {
+  return runs
+    .map((run, index) => {
+      const summary = compactMultilineText(run.summary ?? run.report_text ?? run.selection?.reason ?? '')
+
+      if (!summary) {
+        return null
+      }
+
+      return `${index + 1}. ${summary}`
+    })
+    .filter(Boolean)
+}
+
+function isComplexFeishuReply({
+  operatorProfile,
+  message,
+  planning,
+  execution
+}) {
+  if (operatorProfile.response_mode === 'thinking') {
+    return true
+  }
+
+  if (operatorProfile.response_mode === 'fast') {
+    return false
+  }
+
+  if ((planning?.plan?.steps?.length ?? 0) >= 2) {
+    return true
+  }
+
+  if ((execution?.runs?.length ?? 0) >= 2) {
+    return true
+  }
+
+  return buildOperatorRequest(message).length >= 24
+}
+
+function parseFeishuControlCommand(message) {
+  const text = cleanText(message?.text)
+
+  if (!text.startsWith('/')) {
+    return null
+  }
+
+  const [, commandToken = '', rawArgument = ''] = text.match(/^\/([a-zA-Z]+)([\s\S]*)$/u) ?? []
+  const command = cleanText(commandToken).toLowerCase()
+  const argument = cleanText(rawArgument)
+
+  if (!command) {
+    return null
+  }
+
+  return {
+    command,
+    argument
+  }
+}
+
+function buildFeishuAppendSuggestion(argument) {
+  return `补充建议：${argument}`
+}
+
+function assertFeishuRunActive(runState, stage) {
+  if (runState?.stop_requested) {
+    throw new FeishuRunStoppedError(stage)
+  }
+}
+
+function buildFeishuProgressText({
+  operatorProfile,
+  stage,
+  planning = null,
+  latestRun = null,
+  totalRuns = 0
+}) {
+  const lines = []
+  const modeLine = `当前模式：${buildFeishuResponseModeLabel(operatorProfile.response_mode)}`
+  lines.push(modeLine)
+
+  if (stage === 'planning') {
+    lines.push('正在理解你的需求并整理计划。')
+  } else if (stage === 'planned' && planning?.plan) {
+    lines.push(`已拆成 ${planning.plan.steps.length} 步，开始推进。`)
+    lines.push(...summarizePlanStepsForReply(planning.plan.steps).slice(0, 4))
+  } else if (stage === 'executing' && latestRun) {
+    lines.push(`正在推进第 ${totalRuns} 步。`)
+    lines.push(compactMultilineText(latestRun.summary ?? latestRun.report_text ?? ''))
+  } else if (stage === 'waiting_approval') {
+    lines.push('当前已暂停，等待你的审批。')
+  }
+
+  lines.push(`可继续补充：/appendmsg 内容`)
+  lines.push(`需要停止：/stop`)
+
+  return lines
+    .filter(Boolean)
+    .join('\n')
+}
+
+function buildFeishuFinalReplyText({
+  operatorProfile,
+  planning,
+  execution,
+  feedbackAck = null,
+  error = null
+}) {
+  if (error) {
+    return `这轮先停在这里：${error}`
+  }
+
+  const lines = []
+
+  if (planning?.plan?.operator_reply) {
+    lines.push(compactMultilineText(planning.plan.operator_reply))
+  }
+
+  if (execution?.status === 'waiting_approval') {
+    lines.push('下一步涉及高风险操作，当前等待你的审批。')
+  }
+
+  if (execution?.report_text) {
+    lines.push(compactMultilineText(execution.report_text))
+  }
+
+  if (feedbackAck && operatorProfile.response_mode !== 'fast') {
+    lines.push(feedbackAck)
+  }
+
+  return lines.filter(Boolean).join('\n')
+}
+
+function buildFeishuReplyCard({
+  operatorProfile,
+  planning = null,
+  execution = null,
+  feedbackAck = null,
+  error = null
+}) {
+  const planSteps = summarizePlanStepsForReply(planning?.plan?.steps ?? [])
+  const executionRuns = summarizeExecutionRunsForReply(execution?.runs ?? [])
+  const waitingApproval = execution?.status === 'waiting_approval'
+  const title = waitingApproval
+    ? '等待审批'
+    : error
+      ? '处理受阻'
+      : '已完成'
+  const template = waitingApproval
+    ? 'orange'
+    : error
+      ? 'red'
+      : 'green'
+  const sections = []
+
+  if (planning?.plan?.operator_reply) {
+    sections.push(`**当前结论**\n${planning.plan.operator_reply}`)
+  }
+
+  if (planSteps.length > 0) {
+    sections.push(`**本轮计划**\n- ${planSteps.join('\n- ')}`)
+  }
+
+  if (executionRuns.length > 0) {
+    sections.push(`**本轮处理**\n- ${executionRuns.join('\n- ')}`)
+  }
+
+  if (execution?.report_text) {
+    sections.push(`**阶段汇报**\n${execution.report_text}`)
+  }
+
+  if (waitingApproval) {
+    sections.push('**等待你确认**\n- 下一步涉及高风险操作，请先回复确认。')
+  }
+
+  if (error) {
+    sections.push(`**异常**\n- ${error}`)
+  }
+
+  if (feedbackAck && operatorProfile.response_mode !== 'fast') {
+    sections.push(`**已记住**\n- ${feedbackAck}`)
+  }
+
+  if (operatorProfile.show_command_hints) {
+    sections.push(`**快捷指令**\n${buildFeishuCommandHintMarkdown()}`)
+  }
+
+  return {
+    config: {
+      wide_screen_mode: true,
+      enable_forward: true
+    },
+    header: {
+      template,
+      title: {
+        tag: 'plain_text',
+        content: title
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content: sections.join('\n\n')
+      }
+    ]
+  }
 }
 
 function parseIsoTimestamp(value) {
@@ -518,6 +793,9 @@ export function createServerManagerRuntime({
     lastEnqueuedAtMs: null,
     drainPromise: null
   }
+  const feishuRuntimeState = {
+    active_run: null
+  }
 
   function nowIso() {
     return new Date(nowFn()).toISOString()
@@ -671,6 +949,30 @@ export function createServerManagerRuntime({
   async function writeChannelState(channelKey, state) {
     await writeJsonAtomic(getChannelStateFile(channelKey), state)
     return state
+  }
+
+  async function loadFeishuOperatorProfile() {
+    const state = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+    return normalizeFeishuOperatorProfile(state?.operator_profile)
+  }
+
+  async function writeFeishuOperatorProfile(partialProfile) {
+    const currentAt = nowIso()
+    const state = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+    const nextProfile = normalizeFeishuOperatorProfile({
+      ...(state?.operator_profile ?? {}),
+      ...(partialProfile ?? {})
+    })
+
+    await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+      ...(state ?? {}),
+      channel: 'feishu',
+      updated_at: currentAt,
+      operator_profile: nextProfile,
+      version: 1
+    })
+
+    return nextProfile
   }
 
   function getCompactionLockPath(channelKey) {
@@ -871,6 +1173,7 @@ export function createServerManagerRuntime({
           session_id: continued.session.id,
           updated_at: currentAt,
           last_message_at: currentAt,
+          operator_profile: normalizeFeishuOperatorProfile(existingState?.operator_profile),
           version: 1
         })
 
@@ -906,6 +1209,7 @@ export function createServerManagerRuntime({
       updated_at: currentAt,
       last_message_at: currentAt,
       last_compacted_at: currentAt,
+      operator_profile: normalizeFeishuOperatorProfile(existingState?.operator_profile),
       version: 1
     })
 
@@ -1251,7 +1555,8 @@ export function createServerManagerRuntime({
 
   async function planSession({
     sessionId,
-    message
+    message,
+    shouldStop = null
   }) {
     if (!bailianProvider) {
       return null
@@ -1311,6 +1616,12 @@ export function createServerManagerRuntime({
         recentTranscript
       })
     })
+    assertFeishuRunActive(
+      typeof shouldStop === 'function'
+        ? { stop_requested: shouldStop() }
+        : null,
+      'after_planning_provider'
+    )
     const plan = parseManagerPlanningResponse({
       text: providerResult.response.content ?? '',
       availableProjects: projects
@@ -1323,6 +1634,12 @@ export function createServerManagerRuntime({
       recentTranscript,
       plan
     })
+    assertFeishuRunActive(
+      typeof shouldStop === 'function'
+        ? { stop_requested: shouldStop() }
+        : null,
+      'after_plan_review'
+    )
 
     if (review?.issues?.length > 0) {
       plan.operator_reply = `${plan.operator_reply}\n外部复核提示：${review.issues.join('；')}`
@@ -1510,6 +1827,12 @@ export function createServerManagerRuntime({
     })
   }
 
+  function extractFeishuMessageId(response, fallback = null) {
+    return response?.data?.message_id
+      ?? response?.payload?.data?.message_id
+      ?? fallback
+  }
+
   async function sendFeishuText({
     message,
     text
@@ -1523,7 +1846,7 @@ export function createServerManagerRuntime({
 
     if (message?.message_id) {
       try {
-        await feishuGateway.replyTextMessage({
+        const response = await feishuGateway.replyTextMessage({
           messageId: message.message_id,
           text
         })
@@ -1531,12 +1854,12 @@ export function createServerManagerRuntime({
         return {
           ok: true,
           transport: 'reply',
-          message_id: message.message_id
+          message_id: extractFeishuMessageId(response, message.message_id)
         }
       } catch (replyError) {
         if (message?.chat_id) {
           try {
-            await feishuGateway.sendTextMessage({
+            const response = await feishuGateway.sendTextMessage({
               receiveIdType: 'chat_id',
               receiveId: message.chat_id,
               text
@@ -1545,7 +1868,7 @@ export function createServerManagerRuntime({
             return {
               ok: true,
               transport: 'chat',
-              message_id: message.message_id,
+              message_id: extractFeishuMessageId(response, message.message_id),
               chat_id: message.chat_id,
               reply_error: replyError.message
             }
@@ -1576,7 +1899,7 @@ export function createServerManagerRuntime({
     }
 
     try {
-      await feishuGateway.sendTextMessage({
+      const response = await feishuGateway.sendTextMessage({
         receiveIdType: 'chat_id',
         receiveId: message.chat_id,
         text
@@ -1585,6 +1908,7 @@ export function createServerManagerRuntime({
       return {
         ok: true,
         transport: 'chat',
+        message_id: extractFeishuMessageId(response),
         chat_id: message.chat_id
       }
     } catch (chatError) {
@@ -1596,66 +1920,227 @@ export function createServerManagerRuntime({
     }
   }
 
-  async function deliverFeishuReply({
-    sessionId,
-    message,
-    text,
-    stage
+  async function updateFeishuText({
+    messageId,
+    text
   }) {
-    const delivery = await sendFeishuText({
-      message,
-      text
-    })
-
-    if (delivery.ok) {
-      await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'assistant_message_added',
-        actor: 'assistant:manager',
-        payload: {
-          content: text,
-          stage,
-          transport: delivery.transport ?? null,
-          reply_error: delivery.reply_error ?? null
-        }
-      })
-      await emitHook({
-        name: 'channel.reply.sent',
-        sessionId,
-        channel: 'feishu',
-        actor: 'assistant:manager',
-        payload: {
-          stage,
-          transport: delivery.transport ?? null,
-          message_id: delivery.message_id ?? null,
-          chat_id: delivery.chat_id ?? null
-        }
-      })
-
-      return delivery
+    if (!feishuGateway || !messageId || typeof feishuGateway.updateTextMessage !== 'function') {
+      return {
+        ok: false,
+        error: 'Missing Feishu message update support'
+      }
     }
 
+    try {
+      const response = await feishuGateway.updateTextMessage({
+        messageId,
+        text
+      })
+
+      return {
+        ok: true,
+        transport: 'update',
+        message_id: extractFeishuMessageId(response, messageId)
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        message_id: messageId,
+        reply_error: error.message
+      }
+    }
+  }
+
+  async function sendFeishuInteractiveCard({
+    message,
+    card
+  }) {
+    if (!feishuGateway) {
+      return {
+        ok: false,
+        error: 'Missing Feishu gateway'
+      }
+    }
+
+    if (message?.message_id && typeof feishuGateway.replyInteractiveCard === 'function') {
+      try {
+        const response = await feishuGateway.replyInteractiveCard({
+          messageId: message.message_id,
+          card
+        })
+
+        return {
+          ok: true,
+          transport: 'reply',
+          message_id: extractFeishuMessageId(response, message.message_id)
+        }
+      } catch (replyError) {
+        if (message?.chat_id && typeof feishuGateway.sendInteractiveCard === 'function') {
+          try {
+            const response = await feishuGateway.sendInteractiveCard({
+              receiveIdType: 'chat_id',
+              receiveId: message.chat_id,
+              card
+            })
+
+            return {
+              ok: true,
+              transport: 'chat',
+              message_id: extractFeishuMessageId(response, message.message_id),
+              chat_id: message.chat_id,
+              reply_error: replyError.message
+            }
+          } catch (chatError) {
+            return {
+              ok: false,
+              message_id: message.message_id,
+              chat_id: message.chat_id,
+              reply_error: replyError.message,
+              chat_error: chatError.message
+            }
+          }
+        }
+
+        return {
+          ok: false,
+          message_id: message.message_id,
+          reply_error: replyError.message
+        }
+      }
+    }
+
+    if (!message?.chat_id || typeof feishuGateway.sendInteractiveCard !== 'function') {
+      return {
+        ok: false,
+        error: 'Missing Feishu interactive card support'
+      }
+    }
+
+    try {
+      const response = await feishuGateway.sendInteractiveCard({
+        receiveIdType: 'chat_id',
+        receiveId: message.chat_id,
+        card
+      })
+
+      return {
+        ok: true,
+        transport: 'chat',
+        message_id: extractFeishuMessageId(response),
+        chat_id: message.chat_id
+      }
+    } catch (chatError) {
+      return {
+        ok: false,
+        chat_id: message.chat_id,
+        chat_error: chatError.message
+      }
+    }
+  }
+
+  async function appendFeishuReplyTimeline({
+    sessionId = null,
+    stage,
+    delivery,
+    content,
+    format = 'text',
+    action = 'send'
+  }) {
+    if (!sessionId) {
+      return
+    }
+
+    const eventKind = action === 'update'
+      ? 'assistant_message_updated'
+      : 'assistant_message_added'
+
     await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'channel_reply_failed',
+      kind: eventKind,
       actor: 'assistant:manager',
       payload: {
+        content,
         stage,
-        error: delivery.error ?? null,
-        reply_error: delivery.reply_error ?? null,
-        chat_error: delivery.chat_error ?? null
+        format,
+        action,
+        transport: delivery.transport ?? null,
+        message_id: delivery.message_id ?? null,
+        reply_error: delivery.reply_error ?? null
       }
     })
     await emitHook({
-      name: 'channel.reply.failed',
+      name: 'channel.reply.sent',
       sessionId,
       channel: 'feishu',
       actor: 'assistant:manager',
       payload: {
         stage,
-        error: delivery.error ?? null,
-        reply_error: delivery.reply_error ?? null,
-        chat_error: delivery.chat_error ?? null
+        format,
+        action,
+        transport: delivery.transport ?? null,
+        message_id: delivery.message_id ?? null,
+        chat_id: delivery.chat_id ?? null
       }
     })
+  }
+
+  async function deliverFeishuReply({
+    sessionId = null,
+    message,
+    text = null,
+    stage,
+    format = 'text',
+    card = null,
+    timelineContent = null
+  }) {
+    const delivery = format === 'interactive'
+      ? await sendFeishuInteractiveCard({
+          message,
+          card
+        })
+      : await sendFeishuText({
+          message,
+          text
+        })
+
+    if (delivery.ok) {
+      await appendFeishuReplyTimeline({
+        sessionId,
+        stage,
+        delivery,
+        content: timelineContent ?? text ?? null,
+        format,
+        action: 'send'
+      })
+
+      return delivery
+    }
+
+    if (sessionId) {
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'channel_reply_failed',
+        actor: 'assistant:manager',
+        payload: {
+          stage,
+          format,
+          error: delivery.error ?? null,
+          reply_error: delivery.reply_error ?? null,
+          chat_error: delivery.chat_error ?? null
+        }
+      })
+      await emitHook({
+        name: 'channel.reply.failed',
+        sessionId,
+        channel: 'feishu',
+        actor: 'assistant:manager',
+        payload: {
+          stage,
+          format,
+          error: delivery.error ?? null,
+          reply_error: delivery.reply_error ?? null,
+          chat_error: delivery.chat_error ?? null
+        }
+      })
+    }
 
     return delivery
   }
@@ -1701,7 +2186,8 @@ export function createServerManagerRuntime({
   function createDelayedFeishuProgressNotifier({
     sessionId,
     channel,
-    message
+    message,
+    operatorProfile
   }) {
     if (
       channel !== 'feishu' ||
@@ -1712,51 +2198,111 @@ export function createServerManagerRuntime({
     ) {
       return {
         async stop() {},
+        async update() {},
         wasSent() {
           return false
         }
       }
     }
 
-    const progressText = buildDelayedFeishuProgressAck(message)
     let stopped = false
     let sent = false
+    let sentMessageId = null
+    let lastText = null
     let flushPromise = null
-    const timer = setTimeoutFn(() => {
-      if (stopped) {
-        return
+
+    async function publish(text, stage) {
+      if (stopped || !text || text === lastText) {
+        return null
       }
 
+      lastText = text
       sent = true
       flushPromise = Promise.resolve()
         .then(async () => {
-          await deliverFeishuReply({
+          if (sentMessageId) {
+            const update = await updateFeishuText({
+              messageId: sentMessageId,
+              text
+            })
+
+            if (update.ok) {
+              await appendFeishuReplyTimeline({
+                sessionId,
+                stage,
+                delivery: update,
+                content: text,
+                format: 'text',
+                action: 'update'
+              })
+              return update
+            }
+          }
+
+          const delivery = await deliverFeishuReply({
             sessionId,
             message,
-            text: progressText,
-            stage: 'progress_ack'
+            text,
+            stage,
+            format: 'text',
+            timelineContent: text
           })
+
+          if (delivery.ok) {
+            sentMessageId = delivery.message_id ?? sentMessageId
+          }
+
+          return delivery
         })
         .catch(async (error) => {
           await sessionStore.appendTimelineEvent(sessionId, {
             kind: 'channel_reply_failed',
             actor: 'assistant:manager',
             payload: {
-              stage: 'progress_ack',
+              stage,
               reply_error: error.message
             }
           })
         })
-    }, progressReplyDelayMs)
+
+      return flushPromise
+    }
+
+    const initialStage = buildFeishuProgressText({
+      operatorProfile,
+      stage: 'planning'
+    })
+    const timer = operatorProfile.response_mode === 'fast'
+      ? null
+      : setTimeoutFn(() => {
+          if (stopped) {
+            return
+          }
+
+          publish(initialStage, 'progress_ack')
+        }, progressReplyDelayMs)
 
     return {
       async stop() {
         stopped = true
-        clearTimeoutFn(timer)
+        if (timer) {
+          clearTimeoutFn(timer)
+        }
 
         if (flushPromise) {
           await flushPromise
         }
+      },
+      async update({ stage = 'progress_update', text = null, planning = null, latestRun = null, totalRuns = 0 } = {}) {
+        const nextText = text ?? buildFeishuProgressText({
+          operatorProfile,
+          stage,
+          planning,
+          latestRun,
+          totalRuns
+        })
+
+        await publish(nextText, stage)
       },
       wasSent() {
         return sent
@@ -1878,6 +2424,260 @@ export function createServerManagerRuntime({
     }
   }
 
+  function clearQueuedFeishuEntries(reason = 'operator_cleared_queue') {
+    const pendingEntries = feishuInboundQueue.pending.splice(0)
+
+    for (const entry of pendingEntries) {
+      entry.resolve?.({
+        session_id: null,
+        ack_text: reason,
+        planning: null,
+        execution: null,
+        canceled: true
+      })
+    }
+
+    return pendingEntries.length
+  }
+
+  async function abortFeishuSessionAtSafePoint(sessionId, reason = 'operator_stop_command') {
+    if (!sessionId) {
+      return null
+    }
+
+    let snapshot = null
+
+    try {
+      snapshot = await sessionStore.loadSession(sessionId)
+    } catch {
+      return null
+    }
+
+    if (['completed', 'aborted', 'failed'].includes(snapshot.session.status)) {
+      return snapshot
+    }
+
+    return sessionStore.abortSession(sessionId, {
+      reason
+    })
+  }
+
+  async function buildFeishuStatusReply() {
+    const operatorProfile = await loadFeishuOperatorProfile()
+    const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+    const sessionId = feishuRuntimeState.active_run?.session_id ?? channelState?.session_id ?? null
+    const lines = [
+      `当前模式：${buildFeishuResponseModeLabel(operatorProfile.response_mode)}`,
+      `排队消息：${feishuInboundQueue.pending.length}`
+    ]
+
+    if (feishuRuntimeState.active_run?.stop_requested) {
+      lines.push('当前状态：已收到停止请求，正在最近的安全点停下。')
+    } else if (feishuRuntimeState.active_run) {
+      lines.push('当前状态：正在处理。')
+    } else {
+      lines.push('当前状态：空闲。')
+    }
+
+    if (sessionId) {
+      try {
+        const snapshot = await sessionStore.loadSession(sessionId)
+        const currentStep = snapshot.plan_steps.find(
+          (step) => step.id === snapshot.task.current_step_id
+        ) ?? null
+
+        lines.push(`会话：${sessionId}`)
+        lines.push(`会话状态：${snapshot.session.status}`)
+
+        if (currentStep?.title) {
+          lines.push(`当前步骤：${currentStep.title}`)
+        }
+      } catch {}
+    }
+
+    lines.push(buildFeishuCommandHintText())
+
+    return {
+      session_id: sessionId,
+      text: lines.join('\n')
+    }
+  }
+
+  async function maybeHandleFeishuControlCommand({
+    message,
+    autoReply = true,
+    autoPlan = true,
+    autoExecuteSafeInspect = true
+  }) {
+    const parsed = parseFeishuControlCommand(message)
+
+    if (!parsed) {
+      return null
+    }
+
+    if (parsed.command === 'help') {
+      const ackText = `可用命令：\n${buildFeishuCommandHintText()}`
+
+      await deliverFeishuReply({
+        message,
+        text: ackText,
+        stage: 'command_reply'
+      })
+
+      return {
+        session_id: null,
+        ack_text: ackText,
+        planning: null,
+        execution: null,
+        command_name: 'help'
+      }
+    }
+
+    if (parsed.command === 'status') {
+      const status = await buildFeishuStatusReply()
+
+      await deliverFeishuReply({
+        sessionId: status.session_id,
+        message,
+        text: status.text,
+        stage: 'command_reply'
+      })
+
+      return {
+        session_id: status.session_id,
+        ack_text: status.text,
+        planning: null,
+        execution: null,
+        command_name: 'status'
+      }
+    }
+
+    if (parsed.command === 'fast' || parsed.command === 'thinking') {
+      const operatorProfile = await writeFeishuOperatorProfile({
+        response_mode: parsed.command
+      })
+      const ackText = parsed.argument
+        ? `已切到 ${parsed.command === 'fast' ? '快回' : '持续反馈'}模式，继续处理你刚补的请求。`
+        : `已切到 ${parsed.command === 'fast' ? '快回' : '持续反馈'}模式。`
+
+      await deliverFeishuReply({
+        message,
+        text: ackText,
+        stage: 'command_reply'
+      })
+
+      if (parsed.argument) {
+        enqueueFeishuMessage({
+          message: {
+            ...message,
+            text: parsed.argument
+          },
+          options: {
+            autoReply,
+            autoPlan,
+            autoExecuteSafeInspect
+          },
+          resolve() {},
+          reject() {}
+        })
+      }
+
+      return {
+        session_id: null,
+        ack_text: ackText,
+        planning: null,
+        execution: null,
+        command_name: parsed.command
+      }
+    }
+
+    if (parsed.command === 'appendmsg') {
+      if (!parsed.argument) {
+        const ackText = '用法：/appendmsg 你的补充建议'
+
+        await deliverFeishuReply({
+          message,
+          text: ackText,
+          stage: 'command_reply'
+        })
+
+        return {
+          session_id: null,
+          ack_text: ackText,
+          planning: null,
+          execution: null,
+          command_name: 'appendmsg'
+        }
+      }
+
+      enqueueFeishuMessage({
+        message: {
+          ...message,
+          text: buildFeishuAppendSuggestion(parsed.argument)
+        },
+        options: {
+          autoReply,
+          autoPlan,
+          autoExecuteSafeInspect
+        },
+        resolve() {},
+        reject() {}
+      })
+
+      const ackText = '已追加到当前任务，当前轮结束后会自动接上。'
+
+      await deliverFeishuReply({
+        sessionId: feishuRuntimeState.active_run?.session_id ?? null,
+        message,
+        text: ackText,
+        stage: 'command_reply'
+      })
+
+      return {
+        session_id: feishuRuntimeState.active_run?.session_id ?? null,
+        ack_text: ackText,
+        planning: null,
+        execution: null,
+        command_name: 'appendmsg',
+        queued: true
+      }
+    }
+
+    if (parsed.command === 'stop') {
+      const activeRun = feishuRuntimeState.active_run
+      const clearedCount = clearQueuedFeishuEntries('stopped_by_operator')
+
+      if (activeRun) {
+        activeRun.stop_requested = true
+      } else {
+        const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+        await abortFeishuSessionAtSafePoint(channelState?.session_id ?? null)
+      }
+
+      const ackText = activeRun
+        ? `已收到 /stop，当前轮会在最近的安全点停下，排队消息已清空 ${clearedCount} 条。`
+        : `已停止当前轮，排队消息已清空 ${clearedCount} 条。`
+
+      await deliverFeishuReply({
+        sessionId: activeRun?.session_id ?? null,
+        message,
+        text: ackText,
+        stage: 'command_reply'
+      })
+
+      return {
+        session_id: activeRun?.session_id ?? null,
+        ack_text: ackText,
+        planning: null,
+        execution: null,
+        command_name: 'stop',
+        stopped: true
+      }
+    }
+
+    return null
+  }
+
   async function handleChannelMessage({
     channel,
     message,
@@ -1887,123 +2687,170 @@ export function createServerManagerRuntime({
   }) {
     const shouldReply =
       autoReply || (channel === 'feishu' && Boolean(feishuGateway) && Boolean(message?.message_id || message?.chat_id))
-
-    await ensureServerBaseline()
-
-    const activeTurn = channel === 'feishu'
-      ? await ensureFeishuUnifiedSessionTurn(message)
-      : {
-          kind: 'created',
-          snapshot: await sessionStore.createSession({
-            title: buildOperatorTitle(message),
-            projectKey: 'remote-server-manager',
-            userRequest: buildOperatorRequest(message),
-            summary: `Received ${channel} operator request`
-          }),
-          channel_state: null
+    const feishuRunState = channel === 'feishu'
+      ? {
+          id: createUlid(nowFn()),
+          stop_requested: false,
+          session_id: null
         }
-    const sessionId = activeTurn.snapshot.session.id
-    const channelMessages = listOperatorMessages(message)
+      : null
+    let sessionId = null
+    let planning = null
+    let execution = null
+    let ackText = null
+    let feedbackAck = null
+    let finalReplyError = null
+    let suppressFinalReply = false
+    let operatorProfile = normalizeFeishuOperatorProfile()
+    let progressNotifier = {
+      async stop() {},
+      async update() {},
+      wasSent() {
+        return false
+      }
+    }
 
-    for (const [index, channelMessage] of channelMessages.entries()) {
-      await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'channel_message_received',
+    if (feishuRunState) {
+      feishuRuntimeState.active_run = feishuRunState
+    }
+
+    try {
+      await ensureServerBaseline()
+      if (channel === 'feishu') {
+        operatorProfile = await loadFeishuOperatorProfile()
+      }
+
+      const activeTurn = channel === 'feishu'
+        ? await ensureFeishuUnifiedSessionTurn(message)
+        : {
+            kind: 'created',
+            snapshot: await sessionStore.createSession({
+              title: buildOperatorTitle(message),
+              projectKey: 'remote-server-manager',
+              userRequest: buildOperatorRequest(message),
+              summary: `Received ${channel} operator request`
+            }),
+            channel_state: null
+          }
+      sessionId = activeTurn.snapshot.session.id
+
+      if (feishuRunState) {
+        feishuRunState.session_id = sessionId
+      }
+
+      const channelMessages = listOperatorMessages(message)
+
+      for (const [index, channelMessage] of channelMessages.entries()) {
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'channel_message_received',
+          actor: `channel:${channel}`,
+          payload: {
+            channel,
+            message_id: channelMessage.message_id ?? null,
+            chat_id: channelMessage.chat_id ?? null,
+            sender_open_id: channelMessage.sender_open_id ?? null,
+            batch_index: index + 1,
+            batch_size: channelMessages.length
+          }
+        })
+      }
+      await emitHook({
+        name: 'channel.message.received',
+        sessionId,
+        channel,
         actor: `channel:${channel}`,
         payload: {
-          channel,
-          message_id: channelMessage.message_id ?? null,
-          chat_id: channelMessage.chat_id ?? null,
-          sender_open_id: channelMessage.sender_open_id ?? null,
-          batch_index: index + 1,
+          message_id: message.message_id ?? null,
+          chat_id: message.chat_id ?? null,
+          sender_open_id: message.sender_open_id ?? null,
           batch_size: channelMessages.length
         }
       })
-    }
-    await emitHook({
-      name: 'channel.message.received',
-      sessionId,
-      channel,
-      actor: `channel:${channel}`,
-      payload: {
-        message_id: message.message_id ?? null,
-        chat_id: message.chat_id ?? null,
-        sender_open_id: message.sender_open_id ?? null,
-        batch_size: channelMessages.length
+
+      let immediateAck = message.immediate_ack ?? null
+
+      if (
+        shouldReply &&
+        channel === 'feishu' &&
+        feishuGateway &&
+        message.message_id &&
+        !immediateAck
+      ) {
+        immediateAck = await sendImmediateFeishuAck({
+          messageId: message.message_id
+        })
       }
-    })
 
-    let immediateAck = message.immediate_ack ?? null
+      if (
+        shouldReply &&
+        channel === 'feishu' &&
+        immediateAck
+      ) {
+        await appendImmediateAckTimelineEvent(sessionId, immediateAck)
+      }
 
-    if (
-      shouldReply &&
-      channel === 'feishu' &&
-      feishuGateway &&
-      message.message_id &&
-      !immediateAck
-    ) {
-      immediateAck = await sendImmediateFeishuAck({
-        messageId: message.message_id
-      })
-    }
+      progressNotifier = shouldReply
+        ? createDelayedFeishuProgressNotifier({
+            sessionId,
+            channel,
+            message,
+            operatorProfile
+          })
+        : progressNotifier
 
-    if (
-      shouldReply &&
-      channel === 'feishu' &&
-      immediateAck
-    ) {
-      await appendImmediateAckTimelineEvent(sessionId, immediateAck)
-    }
+      ackText = activeTurn.kind === 'continued'
+        ? `已收到，继续沿用总管会话 ${sessionId}。`
+        : `已收到，总管会话 ${sessionId} 已创建。`
 
-    const progressNotifier = shouldReply
-      ? createDelayedFeishuProgressNotifier({
+      try {
+        assertFeishuRunActive(feishuRunState, 'before_feedback_learning')
+        const feedbackLearning = await learnOperatorFeedback({
           sessionId,
           channel,
           message
         })
-      : {
-          async stop() {},
-          wasSent() {
-            return false
-          }
+        feedbackAck = buildFeedbackLearningAck(feedbackLearning)
+
+        if (feedbackAck) {
+          ackText = `${ackText}\n${feedbackAck}`
         }
 
-    let planning = null
-    let execution = null
-    let ackText = activeTurn.kind === 'continued'
-      ? `已收到，继续沿用总管会话 ${sessionId}。`
-      : `已收到，总管会话 ${sessionId} 已创建。`
+        if (channel === 'feishu') {
+          await maybeCompactFeishuContext({
+            sessionId,
+            currentTaskId: activeTurn.snapshot.task.id
+          })
+        }
 
-    try {
-      const feedbackLearning = await learnOperatorFeedback({
-        sessionId,
-        channel,
-        message
-      })
-      const feedbackAck = buildFeedbackLearningAck(feedbackLearning)
+        assertFeishuRunActive(feishuRunState, 'after_compaction')
 
-      if (feedbackAck) {
-        ackText = `${ackText}\n${feedbackAck}`
-      }
-
-      if (channel === 'feishu') {
-        await maybeCompactFeishuContext({
-          sessionId,
-          currentTaskId: activeTurn.snapshot.task.id
-        })
-      }
-
-      if (isLightweightPing(message)) {
-        ackText = buildLightweightPingReply()
-        await completePingSession({
-          sessionId,
-          replyText: ackText
-        })
-      } else if (autoPlan && bailianProvider) {
-        try {
+        if (isLightweightPing(message)) {
+          ackText = buildLightweightPingReply()
+          await completePingSession({
+            sessionId,
+            replyText: ackText
+          })
+        } else if (autoPlan && bailianProvider) {
           planning = await planSession({
             sessionId,
-            message
+            message,
+            shouldStop: () => feishuRunState?.stop_requested === true
           })
+          const shouldStreamProgress = channel === 'feishu'
+            && isComplexFeishuReply({
+              operatorProfile,
+              message,
+              planning,
+              execution
+            })
+
+          if (shouldStreamProgress) {
+            await progressNotifier.update({
+              stage: 'planned',
+              planning
+            })
+          }
+
           ackText = activeTurn.kind === 'continued'
             ? `已收到，继续沿用总管会话 ${sessionId}。`
             : `已收到，总管会话 ${sessionId} 已创建。`
@@ -2020,12 +2867,31 @@ export function createServerManagerRuntime({
             ackText = `${ackText}\n外部复核要求先人工确认，本轮暂不自动推进。`
           }
 
+          assertFeishuRunActive(feishuRunState, 'after_planning')
+
           if (allowAutoExecute) {
             execution = await managerExecutor.runManagerLoop({
               sessionId,
               currentInput: buildOperatorRequest(message),
-              maxSteps: 4
+              maxSteps: 4,
+              onProgress: async ({ result, runs }) => {
+                if (!shouldStreamProgress) {
+                  return
+                }
+
+                await progressNotifier.update({
+                  stage: result.status === 'waiting_approval' ? 'waiting_approval' : 'executing',
+                  planning,
+                  latestRun: result,
+                  totalRuns: runs.length
+                })
+              },
+              shouldStop: () => feishuRunState?.stop_requested === true
             })
+
+            if (execution?.status === 'stopped') {
+              throw new FeishuRunStoppedError('manager_loop_stopped')
+            }
 
             if (execution.runs.length > 0) {
               const completedLabels = summarizeManagerRuns(execution.runs)
@@ -2094,7 +2960,21 @@ export function createServerManagerRuntime({
               }
             }
           }
-        } catch (error) {
+        }
+      } catch (error) {
+        if (error instanceof FeishuRunStoppedError) {
+          suppressFinalReply = true
+          ackText = '已停止当前轮。'
+          await abortFeishuSessionAtSafePoint(sessionId)
+          await sessionStore.appendTimelineEvent(sessionId, {
+            kind: 'manager_run_stopped',
+            actor: 'manager:runtime',
+            payload: {
+              stage: error.stage
+            }
+          })
+        } else {
+          finalReplyError = error.message
           await sessionStore.appendTimelineEvent(sessionId, {
             kind: 'manager_plan_failed',
             actor: 'manager:planner',
@@ -2122,30 +3002,70 @@ export function createServerManagerRuntime({
             ackText = `${ackText}\n${feedbackAck}`
           }
         }
+      } finally {
+        await progressNotifier.stop()
+      }
+
+      if (
+        shouldReply &&
+        channel === 'feishu' &&
+        feishuGateway &&
+        (message.message_id || message.chat_id) &&
+        !suppressFinalReply
+      ) {
+        const finalText = buildFeishuFinalReplyText({
+          operatorProfile,
+          planning,
+          execution,
+          feedbackAck,
+          error: finalReplyError
+        }) || ackText
+        const useInteractiveReply = operatorProfile.enable_markdown
+          && isComplexFeishuReply({
+            operatorProfile,
+            message,
+            planning,
+            execution
+          })
+
+        if (useInteractiveReply) {
+          await deliverFeishuReply({
+            sessionId,
+            message,
+            stage: 'final_reply',
+            format: 'interactive',
+            card: buildFeishuReplyCard({
+              operatorProfile,
+              planning,
+              execution,
+              feedbackAck,
+              error: finalReplyError
+            }),
+            timelineContent: finalText
+          })
+        } else {
+          await deliverFeishuReply({
+            sessionId,
+            message,
+            text: finalText,
+            stage: 'final_reply',
+            format: 'text',
+            timelineContent: finalText
+          })
+        }
+      }
+
+      return {
+        session_id: sessionId,
+        ack_text: ackText,
+        planning,
+        execution,
+        stopped: suppressFinalReply
       }
     } finally {
-      await progressNotifier.stop()
-    }
-
-    if (
-      shouldReply &&
-      channel === 'feishu' &&
-      feishuGateway &&
-      (message.message_id || message.chat_id)
-    ) {
-      await deliverFeishuReply({
-        sessionId,
-        message,
-        text: ackText,
-        stage: 'final_reply'
-      })
-    }
-
-    return {
-      session_id: sessionId,
-      ack_text: ackText,
-      planning,
-      execution
+      if (feishuRuntimeState.active_run === feishuRunState) {
+        feishuRuntimeState.active_run = null
+      }
     }
   }
 
@@ -2166,6 +3086,17 @@ export function createServerManagerRuntime({
       immediateReactionEmojiType: autoReply ? buildImmediateFeishuReaction() : null,
       immediateReplyText: autoReply ? buildImmediateFeishuAck() : null,
       onMessage: async (message) => {
+        const commandResult = await maybeHandleFeishuControlCommand({
+          message,
+          autoReply,
+          autoPlan,
+          autoExecuteSafeInspect
+        })
+
+        if (commandResult) {
+          return commandResult
+        }
+
         return new Promise((resolve, reject) => {
           enqueueFeishuMessage({
             message,

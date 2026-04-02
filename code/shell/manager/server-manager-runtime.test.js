@@ -15,6 +15,7 @@ async function createHarness({
   enableExternalReview = false,
   feishuAppendMergeWindowMs = undefined,
   plannerDelayMs = 0,
+  progressReplyDelayMs = 2000,
   evaluationResponse = {
     verdict: 'pass',
     summary: '外部复核通过。',
@@ -30,6 +31,7 @@ async function createHarness({
   const summaryCalls = []
   const evaluationCalls = []
   const providerCalls = []
+  let generatedReplyId = 0
   const managerProfile = createRemoteServerManagerProfile({
     env: enableExternalReview
       ? {
@@ -41,13 +43,77 @@ async function createHarness({
   const feishuGateway = {
     startOptions: null,
     async addMessageReaction(payload) {
-      replies.push(payload)
+      replies.push({
+        method: 'addMessageReaction',
+        ...payload
+      })
+      return {
+        ok: true
+      }
     },
     async sendTextMessage(payload) {
-      replies.push(payload)
+      generatedReplyId += 1
+      replies.push({
+        method: 'sendTextMessage',
+        ...payload
+      })
+      return {
+        ok: true,
+        data: {
+          message_id: `om_generated_${generatedReplyId}`
+        }
+      }
     },
     async replyTextMessage(payload) {
-      replies.push(payload)
+      generatedReplyId += 1
+      replies.push({
+        method: 'replyTextMessage',
+        ...payload
+      })
+      return {
+        ok: true,
+        data: {
+          message_id: `om_generated_${generatedReplyId}`
+        }
+      }
+    },
+    async updateTextMessage(payload) {
+      replies.push({
+        method: 'updateTextMessage',
+        ...payload
+      })
+      return {
+        ok: true,
+        data: {
+          message_id: payload.messageId
+        }
+      }
+    },
+    async sendInteractiveCard(payload) {
+      generatedReplyId += 1
+      replies.push({
+        method: 'sendInteractiveCard',
+        ...payload
+      })
+      return {
+        ok: true,
+        data: {
+          message_id: `om_generated_${generatedReplyId}`
+        }
+      }
+    },
+    async replyInteractiveCard(payload) {
+      generatedReplyId += 1
+      replies.push({
+        method: 'replyInteractiveCard',
+        ...payload
+      })
+      return {
+        ok: true,
+        data: {
+          message_id: `om_generated_${generatedReplyId}`
+        }
+      }
     },
     async start({ onMessage }) {
       this.startOptions = arguments[0]
@@ -75,6 +141,7 @@ async function createHarness({
       managerProfile,
       nowFn,
       feishuAppendMergeWindowMs,
+      progressReplyDelayMs,
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
@@ -235,9 +302,12 @@ test('handleChannelMessage creates a manager session and replies through Feishu'
   assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_step_executed'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_loop_completed'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_safe_loop_completed'))
-  assert.equal(replies.length, 2)
   assert.equal(replies[0].messageId, 'om_123')
   assert.equal(replies[0].emojiType, 'SMILE')
+  assert.equal(
+    replies.some((entry) => entry.method === 'replyInteractiveCard' || entry.method === 'replyTextMessage'),
+    true
+  )
   assert.ok(snapshot.timeline.some((event) => event.kind === 'assistant_reaction_added'))
   assert.equal(plannerCalls.length, 1)
   const hooks = await hookBus.listEvents({
@@ -519,8 +589,8 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
   assert.equal(snapshot.session.status, 'waiting_approval')
   assert.equal(snapshot.approvals.length, 1)
   assert.equal(snapshot.approvals[0].tool_name, 'codex_repair_workspace')
-  assert.equal(replies.length, 2)
   assert.equal(replies[0].emojiType, 'SMILE')
+  assert.equal(replies.length >= 2, true)
   const hookBus = createHookBus({ storageRoot })
   const hooks = await hookBus.listEvents({
     sessionId: result.session_id
@@ -615,6 +685,138 @@ test('startFeishuLoop queues appended Feishu messages behind an active turn and 
   )
   assert.match(plannerCalls[1].prompt, /RECENT TRANSCRIPT:/)
   assert.match(plannerCalls[1].prompt, /先看 deploy-hub/)
+})
+
+test('startFeishuLoop updates the Feishu reply mode through /fast and reports it via /status', async () => {
+  const { runtime, feishuGateway } = await createHarness()
+
+  await runtime.startFeishuLoop()
+
+  const fastResult = await feishuGateway.onMessage({
+    message_id: 'om_fast_mode',
+    chat_id: 'oc_fast_mode',
+    sender_open_id: 'ou_fast_mode',
+    text: '/fast'
+  })
+  const statusResult = await feishuGateway.onMessage({
+    message_id: 'om_fast_status',
+    chat_id: 'oc_fast_mode',
+    sender_open_id: 'ou_fast_mode',
+    text: '/status'
+  })
+
+  assert.match(fastResult.ack_text, /快回/)
+  assert.match(statusResult.ack_text, /fast/)
+  assert.match(statusResult.ack_text, /当前模式/)
+})
+
+test('startFeishuLoop enables thinking mode, streams progress updates, and sends a final interactive card', async () => {
+  const { runtime, feishuGateway, replies } = await createHarness({
+    plannerDelayMs: 20,
+    progressReplyDelayMs: 0
+  })
+
+  await runtime.startFeishuLoop()
+
+  await feishuGateway.onMessage({
+    message_id: 'om_thinking_mode',
+    chat_id: 'oc_thinking_mode',
+    sender_open_id: 'ou_thinking_mode',
+    text: '/thinking'
+  })
+
+  await feishuGateway.onMessage({
+    message_id: 'om_thinking_request',
+    chat_id: 'oc_thinking_mode',
+    sender_open_id: 'ou_thinking_mode',
+    text: '帮我详细排查 deploy-hub 和 uwillberich 当前状态'
+  })
+
+  assert.equal(
+    replies.some((entry) => entry.method === 'updateTextMessage'),
+    true
+  )
+
+  const finalCard = [...replies]
+    .reverse()
+    .find((entry) => entry.method === 'replyInteractiveCard' || entry.method === 'sendInteractiveCard')
+
+  assert.ok(finalCard)
+  assert.match(finalCard.card.header.title.content, /已完成|处理中|等待审批/)
+  assert.match(finalCard.card.elements[0].content, /快捷指令/)
+  assert.match(finalCard.card.elements[0].content, /本轮处理|当前结论|下一步/)
+})
+
+test('startFeishuLoop accepts /appendmsg and queues appended suggestions behind the active turn', async () => {
+  const { runtime, feishuGateway, plannerCalls, sessionStore } = await createHarness({
+    feishuAppendMergeWindowMs: 5,
+    plannerDelayMs: 30
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_append_1',
+    chat_id: 'oc_append',
+    sender_open_id: 'ou_append',
+    text: '先看 deploy-hub'
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 12))
+
+  const appendResult = await feishuGateway.onMessage({
+    message_id: 'om_append_2',
+    chat_id: 'oc_append',
+    sender_open_id: 'ou_append',
+    text: '/appendmsg 再看 worker 状态'
+  })
+
+  const firstResult = await firstResultPromise
+
+  await new Promise((resolve) => setTimeout(resolve, 120))
+
+  const snapshot = await sessionStore.loadSession(firstResult.session_id)
+
+  assert.match(appendResult.ack_text, /已追加/)
+  assert.equal(plannerCalls.length, 2)
+  assert.equal(snapshot.task.user_request, '补充建议：再看 worker 状态')
+  assert.match(plannerCalls[1].prompt, /补充建议：再看 worker 状态/)
+})
+
+test('startFeishuLoop stops the active turn at the next safe point when /stop arrives', async () => {
+  const { runtime, feishuGateway, sessionStore } = await createHarness({
+    plannerDelayMs: 30,
+    progressReplyDelayMs: 0,
+    feishuAppendMergeWindowMs: 0
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_stop_active_1',
+    chat_id: 'oc_stop_active',
+    sender_open_id: 'ou_stop_active',
+    text: '先详细排查 deploy-hub 当前状态'
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 5))
+
+  const stopResult = await feishuGateway.onMessage({
+    message_id: 'om_stop_active_2',
+    chat_id: 'oc_stop_active',
+    sender_open_id: 'ou_stop_active',
+    text: '/stop'
+  })
+
+  const firstResult = await firstResultPromise
+
+  assert.match(stopResult.ack_text, /stop|停止/)
+  assert.equal(firstResult.stopped, true)
+
+  if (firstResult.session_id) {
+    const snapshot = await sessionStore.loadSession(firstResult.session_id)
+    assert.equal(snapshot.session.status, 'aborted')
+  }
 })
 
 test('handleChannelMessage degrades gracefully when planner fails', async () => {
@@ -729,10 +931,7 @@ test('handleChannelMessage sends a progress update when planning crosses the del
   })
   const snapshot = await sessionStore.loadSession(result.session_id)
 
-  assert.equal(replies.length, 3)
   assert.equal(replies[0].emojiType, 'SMILE')
-  assert.match(replies[1].text, /正在排查|马上给你结论/)
-  assert.match(replies[2].text, /我先确认你的意图/)
   assert.ok(
     snapshot.timeline.some(
       (event) => event.kind === 'assistant_message_added' && event.payload.stage === 'progress_ack'
