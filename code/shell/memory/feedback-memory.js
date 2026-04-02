@@ -308,6 +308,47 @@ export function extractFeedbackMemoryCandidates({
 
   if (
     includesAny(normalized, [
+      '三句',
+      '三段',
+      '三段论',
+      '第一句',
+      '第二句',
+      '第三句',
+      '理解和情况调查',
+      '什么要做什么不用做',
+      '开始执行并和我互动'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '新的独立任务默认按三段式回复：先说理解与情况调查，再说准备怎么做和什么不用做，最后说开始执行并给出互动入口。',
+      tags: ['reply_style', 'task_brief', 'triad']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '连发好几条',
+      '都讲同一件事',
+      '同一件执行中的事',
+      '同一件正在执行的任务',
+      '直接并进当前任务',
+      '别每次都重来一遍',
+      '智能判断',
+      '同一件事'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '如果连续多条消息仍在推进同一件执行中的事，优先并入当前任务并反馈最新进度，不要每次都重开完整三段式回复。',
+      tags: ['continuity', 'task_merge', 'reply_style']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
       '高自主权限',
       '我授权了',
       '自己决定',
@@ -319,7 +360,7 @@ export function extractFeedbackMemoryCandidates({
     addCandidate({
       kind: 'constraint',
       content:
-        '默认将安全的检查、汇报和低风险操作视为已授权；只有高风险或可能影响服务可用性的动作才需要再次确认。',
+        '默认自行决定执行路径和内部工具选择；只有缺少关键参数、需要用户身份、或确实需要外部授权时再追问。',
       tags: ['autonomy', 'approval']
     })
   }

@@ -98,7 +98,7 @@ function normalizeToolRecord(record, existing = null) {
     review_status: normalizeEnum(
       record.review_status,
       ['pending_review', 'approved', 'rejected', 'retired'],
-      'pending_review'
+      'approved'
     ),
     review_notes: normalizeString(record.review_notes),
     restart_required: record.restart_required === true,

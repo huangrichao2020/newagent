@@ -61,7 +61,7 @@ test('seedProjects writes the aliyun server baseline and listProjects can filter
   assert.equal(minorProjects.some((project) => project.project_key === 'deploy-hub'), true)
 })
 
-test('remote manager profile pins the intended channels and model routing', async () => {
+test('remote agent profile pins the intended channels and model routing', async () => {
   const profile = createRemoteServerManagerProfile({
     env: {}
   })
@@ -74,19 +74,20 @@ test('remote manager profile pins the intended channels and model routing', asyn
   assert.equal(profile.model_routing.execution.model, 'qwen3.5-plus')
   assert.equal(profile.external_review.enabled, false)
   assert.equal(profile.background_precompute.enabled, false)
-  assert.equal(profile.codex_integration.allow_review, true)
-  assert.equal(profile.codex_integration.allow_repair, true)
+  assert.equal(profile.codex_integration.allow_review, false)
+  assert.equal(profile.codex_integration.allow_repair, false)
 })
 
-test('remote manager profile can disable Codex integration through env flags', async () => {
+test('remote agent profile can explicitly enable Codex integration through env flags', async () => {
   const profile = createRemoteServerManagerProfile({
     env: {
-      NEWAGENT_DISABLE_CODEX: 'true'
+      NEWAGENT_ENABLE_CODEX_REVIEW: 'true',
+      NEWAGENT_ENABLE_CODEX_REPAIR: 'true'
     }
   })
 
-  assert.equal(profile.codex_integration.allow_review, false)
-  assert.equal(profile.codex_integration.allow_repair, false)
+  assert.equal(profile.codex_integration.allow_review, true)
+  assert.equal(profile.codex_integration.allow_repair, true)
 })
 
 test('remote manager profile can enable OpenRouter external review without storing secrets in repo config', async () => {
@@ -102,11 +103,23 @@ test('remote manager profile can enable OpenRouter external review without stori
   assert.equal(profile.external_review.enforcing, false)
   assert.equal(profile.model_routing.evaluation.provider, 'openrouter')
   assert.equal(profile.model_routing.evaluation.model, 'stepfun/step-3.5-flash:free')
-  assert.equal(profile.background_precompute.enabled, true)
+  assert.equal(profile.background_precompute.enabled, false)
   assert.equal(profile.model_routing.background.provider, 'openrouter')
   assert.equal(profile.model_routing.background.model, 'stepfun/step-3.5-flash:free')
   assert.equal(
     profile.model_routing.evaluation.extra_headers['HTTP-Referer'],
     'https://newagent.local'
   )
+})
+
+test('remote manager profile keeps background precompute opt-in even when external review is enabled', async () => {
+  const profile = createRemoteServerManagerProfile({
+    env: {
+      NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
+      NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE: 'true'
+    }
+  })
+
+  assert.equal(profile.external_review.enabled, true)
+  assert.equal(profile.background_precompute.enabled, true)
 })

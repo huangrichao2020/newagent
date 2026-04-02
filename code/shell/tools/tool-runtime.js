@@ -230,24 +230,6 @@ function normalizePath(workspaceRoot, targetPath) {
   return resolve(workspaceRoot, targetPath)
 }
 
-function hasApprovedDangerousExecution(snapshot, { stepId, toolName, input }) {
-  return snapshot.approvals.some((approval) => {
-    if (approval.status !== 'approved') {
-      return false
-    }
-
-    if (approval.step_id !== stepId) {
-      return false
-    }
-
-    if (approval.tool_name !== toolName) {
-      return false
-    }
-
-    return JSON.stringify(approval.requested_input ?? {}) === JSON.stringify(input ?? {})
-  })
-}
-
 async function searchTextInPath(targetPath, pattern, maxResults) {
   const entries = await readdir(targetPath, { withFileTypes: true })
   const results = []
@@ -2319,7 +2301,7 @@ function createServerOpsSpecs(storageRoot, fetchFn, managerProfile) {
             {
               capability: 'dynamic_scripts',
               available: true,
-              tools: ['dynamic_tool_register', 'dynamic_tool_review_queue', 'dynamic_tool_mark_reviewed']
+              tools: ['dynamic_tool_list', 'dynamic_tool_register']
             }
           ]
         }
@@ -2629,20 +2611,6 @@ function createDynamicToolBuiltinSpecs(storageRoot) {
       }
     },
     {
-      name: 'dynamic_tool_review_queue',
-      description: 'List dynamic tools waiting for maintenance review',
-      permission_class: 'safe',
-      input_schema: {
-        type: 'object'
-      },
-      side_effects: false,
-      async handler() {
-        return {
-          tools: await dynamicToolRegistry.listReviewQueue()
-        }
-      }
-    },
-    {
       name: 'dynamic_tool_register',
       description: 'Register one temporary or permanent dynamic tool command',
       permission_class: 'dangerous',
@@ -2656,29 +2624,6 @@ function createDynamicToolBuiltinSpecs(storageRoot) {
           tool: await dynamicToolRegistry.registerTool({
             category: input.category ?? inferToolCategory(input.tool_name ?? ''),
             ...input
-          })
-        }
-      }
-    },
-    {
-      name: 'dynamic_tool_mark_reviewed',
-      description: 'Update lifecycle or review state for one dynamic tool',
-      permission_class: 'dangerous',
-      input_schema: {
-        type: 'object',
-        required: ['tool_name']
-      },
-      side_effects: true,
-      async handler(input = {}) {
-        if (!input.tool_name) {
-          throw new Error('Missing required tool input: tool_name')
-        }
-
-        return {
-          tool: await dynamicToolRegistry.markToolReviewed(input.tool_name, {
-            lifecycle: input.lifecycle ?? null,
-            reviewStatus: input.review_status ?? null,
-            reviewNotes: input.review_notes ?? null
           })
         }
       }
@@ -2973,10 +2918,6 @@ export function createToolRuntime({
     .concat(withToolCategory(createWebSpecs(fetchFn), 'web'))
     .concat(withToolCategory(createCodexSpecs(workspaceRoot, codexCommand), 'codex'))
     .concat(withToolCategory(createDynamicToolBuiltinSpecs(storageRoot), 'dynamic_tool'))
-    .concat(withToolCategory(createToolCatalogSpecs({
-      listCatalogEntries,
-      getCatalogEntry
-    }), 'internal'))
     .concat(withToolCategory([
     {
       name: 'debug_session_get',
@@ -3239,49 +3180,24 @@ export function createToolRuntime({
     })
 
     if (spec.permission_class === 'dangerous') {
-      if (!sessionId) {
-        return {
-          status: 'error',
-          tool_name: toolName,
-          permission_class: spec.permission_class,
-          error: {
-            message: 'Dangerous tools require session context'
-          }
-        }
-      }
-
-      const snapshot = await sessionStore.loadSession(sessionId)
-
-      if (!hasApprovedDangerousExecution(snapshot, {
-        stepId,
-        toolName,
-        input
-      })) {
-        const approval = await sessionStore.requestApproval(sessionId, {
+      if (sessionId) {
+        await sessionStore.appendTimelineEvent(sessionId, {
           stepId,
-          toolName,
-          permissionClass: spec.permission_class,
-          reason: `Tool ${toolName} requires explicit approval before execution`,
-          requestedInput: input
-        })
-        await emitHook({
-          name: 'tool.approval.waiting',
-          sessionId,
+          kind: 'tool_dangerous_execution_started',
           payload: {
-            step_id: stepId ?? null,
-            tool_name: toolName,
-            approval_id: approval.id,
-            permission_class: spec.permission_class
+            tool_name: toolName
           }
         })
-
-        return {
-          status: 'waiting_approval',
-          tool_name: toolName,
-          permission_class: spec.permission_class,
-          approval
-        }
       }
+      await emitHook({
+        name: 'tool.dangerous_execution.started',
+        sessionId,
+        payload: {
+          step_id: stepId ?? null,
+          tool_name: toolName,
+          permission_class: spec.permission_class
+        }
+      })
     }
 
     try {

@@ -36,10 +36,10 @@ export function createRemoteServerManagerProfile({
   const disableCodex = readBooleanEnv(env, 'NEWAGENT_DISABLE_CODEX', false)
   const allowReview = disableCodex
     ? false
-    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REVIEW', true)
+    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REVIEW', false)
   const allowRepair = disableCodex
     ? false
-    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REPAIR', true)
+    : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REPAIR', false)
   const enableExternalReview = readBooleanEnv(env, 'NEWAGENT_ENABLE_EXTERNAL_REVIEW', false)
   const enforceExternalReview = enableExternalReview
     ? readBooleanEnv(env, 'NEWAGENT_ENFORCE_EXTERNAL_REVIEW', false)
@@ -54,7 +54,7 @@ export function createRemoteServerManagerProfile({
   const enableBackgroundPrecompute = readBooleanEnv(
     env,
     'NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE',
-    enableExternalReview
+    false
   )
   const backgroundPrecomputeModel = readStringEnv(
     env,
@@ -63,9 +63,20 @@ export function createRemoteServerManagerProfile({
   )
 
   return {
-    agent_key: 'remote-server-manager',
-    role: 'Professional remote server project manager agent',
+    agent_key: 'newagent',
+    role: 'Adaptive general-purpose agent. Treat project and server knowledge as optional skill packs that should be activated only when the request truly needs them.',
+    default_task_mode: 'general',
     deployment_target: 'aliyun',
+    capabilities: {
+      general_assistant: {
+        default: true,
+        description: 'Default mode for direct answers, document work, structured data tasks, and lightweight execution.'
+      },
+      project_ops: {
+        default: false,
+        description: 'Optional skill pack for project context, service health, deployment, and remote-server operations.'
+      }
+    },
     channels: {
       primary: {
         type: 'feishu',
@@ -255,13 +266,13 @@ export function getAliyunInfrastructureRegistry() {
         project_key: 'newagent',
         name: 'newagent',
         tier: 'major',
-        role: 'Feishu manager runtime and Scrapling worker',
+        role: 'Feishu agent runtime and Scrapling worker',
         source_root: '/root/newagent',
         runtime_root: '/root/newagent',
         publish_root: null,
         public_base_path: null,
         status: 'active',
-        notes: 'Primary manager runs through Feishu; Scrapling worker listens on 7771.'
+        notes: 'Primary agent runs through Feishu; Scrapling worker listens on 7771.'
       },
       {
         project_key: 'ai-coach-clawhub',
@@ -384,7 +395,7 @@ export function getAliyunInfrastructureRegistry() {
         service_key: 'newagent-manager',
         project_key: 'newagent',
         name: 'newagent-manager',
-        role: 'Feishu manager loop and remote project coordinator',
+        role: 'Feishu agent loop and remote project coordinator',
         runtime_kind: 'pm2_node',
         manager: 'pm2',
         process_name: 'newagent-manager',
@@ -401,7 +412,7 @@ export function getAliyunInfrastructureRegistry() {
         service_key: 'newagent-scrapling-worker',
         project_key: 'newagent',
         name: 'newagent-scrapling-worker',
-        role: 'HTML extraction worker for manager web tasks',
+        role: 'HTML extraction worker for agent web tasks',
         runtime_kind: 'pm2_python',
         manager: 'pm2',
         process_name: 'newagent-scrapling-worker',

@@ -29,7 +29,7 @@ test('resolveRoute sends execution intents to Bailian qwen3.5-plus', () => {
   assert.equal(route.model, 'qwen3.5-plus')
 })
 
-test('resolveRoute sends review and repair intents to codex tool adapters', () => {
+test('resolveRoute keeps dedicated review and repair intents disabled by default', () => {
   const router = createModelRouter({
     managerProfile: createRemoteServerManagerProfile({
       env: {}
@@ -38,10 +38,10 @@ test('resolveRoute sends review and repair intents to codex tool adapters', () =
   const review = router.resolveRoute('review')
   const repair = router.resolveRoute('repair')
 
-  assert.equal(review.runtime, 'tool')
-  assert.equal(review.tool_name, 'codex_review_workspace')
-  assert.equal(repair.runtime, 'tool')
-  assert.equal(repair.tool_name, 'codex_repair_workspace')
+  assert.equal(review.runtime, 'disabled')
+  assert.match(review.reason, /disabled/i)
+  assert.equal(repair.runtime, 'disabled')
+  assert.match(repair.reason, /disabled/i)
 })
 
 test('resolveRoute sends evaluation intents to OpenRouter when external review is enabled', () => {
@@ -77,21 +77,22 @@ test('resolveRoute sends background intents to OpenRouter when background precom
   assert.equal(route.model, 'stepfun/step-3.5-flash:free')
 })
 
-test('resolveRoute disables review and repair when Codex integration is turned off', () => {
+test('resolveRoute can enable dedicated review and repair intents when requested explicitly', () => {
   const router = createModelRouter({
     managerProfile: createRemoteServerManagerProfile({
       env: {
-        NEWAGENT_DISABLE_CODEX: 'true'
+        NEWAGENT_ENABLE_CODEX_REVIEW: 'true',
+        NEWAGENT_ENABLE_CODEX_REPAIR: 'true'
       }
     })
   })
   const review = router.resolveRoute('review')
   const repair = router.resolveRoute('repair')
 
-  assert.equal(review.runtime, 'disabled')
-  assert.match(review.reason, /disabled/i)
-  assert.equal(repair.runtime, 'disabled')
-  assert.match(repair.reason, /disabled/i)
+  assert.equal(review.runtime, 'tool')
+  assert.equal(review.tool_name, 'codex_review_workspace')
+  assert.equal(repair.runtime, 'tool')
+  assert.equal(repair.tool_name, 'codex_repair_workspace')
 })
 
 test('resolveRoute disables evaluation when external review is turned off', () => {

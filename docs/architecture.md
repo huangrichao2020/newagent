@@ -4,7 +4,7 @@
 
 `newagent` should be built as a layered runtime for one concrete job:
 
-- a professional remote server project manager agent
+- a long-running operator assistant that can activate the right capabilities on demand
 
 It is not just a generic prompt wrapper and not just a terminal toy shell.
 
@@ -43,17 +43,17 @@ Key rule:
 
 - the session is the unit of continuity
 
-### 2.5 Project Registry
+### 2.5 Capability Registry
 
 Responsibilities:
 
-- persist the remote server project map
-- separate major business projects from minor infrastructure projects
-- record source roots, runtime roots, publish roots, PM2 identities, and service endpoints
+- persist optional capability context such as project maps, service inventories, publish paths, or other domain-specific registries
+- separate durable factual context from transient execution context
+- expose capability data only when the current request actually needs it
 
 Key rule:
 
-- the manager must know what it is managing before it starts operating
+- domain registries are optional capabilities, not the default framing for every task
 
 ### 3. Context Router
 
@@ -120,6 +120,7 @@ Responsibilities:
 Key rule:
 
 - memory stores facts, skills store procedures
+- domain capabilities such as project management should be attached through memory, skills, or registries only when relevant
 
 ### 8. Provider And Reviewer Adapters
 

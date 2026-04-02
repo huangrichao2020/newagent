@@ -15,16 +15,16 @@ Common failures:
 
 For this project there is one more concrete failure:
 
-- no single professional manager agent owns the remote server project graph end to end
+- project-management and remote-server capabilities are too tightly bound into the default assistant path
 
 ## Primary User
 
 Primary user:
 
-- the server owner who wants one professional manager agent to run the remote machine
+- the operator who wants one long-running assistant to handle both general requests and remote-machine work
 - prefers talking through Feishu instead of SSHing in for every task
 - expects visibility, audit, and recoverability
-- wants one agent to own project inventory, release flow, runtime health, and exception follow-up
+- wants project inventory, release flow, runtime health, and exception follow-up to be available as optional capabilities, not mandatory framing
 
 ## Core User Stories
 
@@ -36,7 +36,7 @@ Primary user:
 6. As a user, I want procedural knowledge to live as reusable skills, not be hidden inside one long prompt.
 7. As a user, I want to resume a prior session and know what happened before.
 8. As a user, I want tool execution to be auditable.
-9. As a user, I want the manager agent to know which projects exist on the remote server and what role each project plays.
+9. As a user, I want project-management capability to know which remote projects exist and what role each project plays when the task is actually about those projects.
 10. As a user, I want the manager agent to talk to me through Feishu over a long-lived direct connection.
 11. As a user, I want the manager agent to use Bailian `codingplan` for planning and `qwen3.5-plus` for execution by default.
 12. As a user, I want the manager agent to be able to call Codex for review and repair when needed.
@@ -58,6 +58,7 @@ Primary user:
   - project context
   - durable memory
   - relevant skills
+- Project context or service inventory must be attached only when relevant to the current request.
 - Show what context sources were selected.
 
 ### Planning And Execution
@@ -67,9 +68,9 @@ Primary user:
 - Keep task steps visible and stateful.
 - Split planning model and execution model when needed.
 
-### Project Management
+### Project Management Capability
 
-- Maintain a project registry for the remote server.
+- Maintain a project registry for the remote server as an optional capability.
 - Persist project records including role, source root, runtime root, publish root, and service identity.
 - Distinguish major business projects from minor infrastructure projects.
 - Support loading a known server baseline as seed data.

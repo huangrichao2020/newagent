@@ -77,11 +77,11 @@ Current thin command surface:
 - `provider invoke`
 - `channel feishu-profile`
 - `channel feishu-send`
-- `manager bootstrap`
-- `manager feishu-serve`
-- `manager intake-message`
-- `manager step-run`
-- `manager loop-run`
+- `agent bootstrap`
+- `agent feishu-serve`
+- `agent intake-message`
+- `agent step-run`
+- `agent loop-run`
 - `start`
 - `plan-create`
 - `resume`
@@ -183,15 +183,15 @@ npm run demo:m1
 npm run demo:m1-approval
 ```
 
-Manager bootstrap:
+Agent bootstrap:
 
 ```bash
-npm run manager:bootstrap
-node ./bin/newagent.js manager intake-message \
+npm run agent:bootstrap
+node ./bin/newagent.js agent intake-message \
   --storage-root ./storage \
   --text "检查股票项目发布链" \
   --json
-node ./bin/newagent.js manager loop-run \
+node ./bin/newagent.js agent loop-run \
   --storage-root ./storage \
   --session-id <session-id> \
   --max-steps 4 \

@@ -122,31 +122,136 @@ function normalizeSteps(rawSteps) {
   }))
 }
 
+function normalizeSearchText(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function looksLikeBroadInventoryRequest(query) {
+  return /(整体|全局|所有|全部|清单|盘一下|基线|inventory|registry|all projects|all services|all routes|what projects|which services)/iu.test(query)
+}
+
+function scoreInventoryMatch(query, values = []) {
+  const normalizedQuery = normalizeSearchText(query)
+
+  if (!normalizedQuery) {
+    return 0
+  }
+
+  let score = 0
+
+  for (const value of values) {
+    const normalizedValue = normalizeSearchText(value)
+
+    if (!normalizedValue) {
+      continue
+    }
+
+    if (normalizedQuery.includes(normalizedValue)) {
+      score += Math.min(18, 6 + normalizedValue.length)
+      continue
+    }
+
+    for (const token of normalizedValue.split(/[^a-z0-9\u4e00-\u9fff/_\-.]+/u)) {
+      if (token.length >= 2 && normalizedQuery.includes(token)) {
+        score += token.length >= 4 ? 3 : 1
+      }
+    }
+  }
+
+  return score
+}
+
+function selectRelevantInventory(items, {
+  query,
+  valuesForItem,
+  maxItems,
+  projectBoostKeys = null,
+  keepAllThreshold = 3
+}) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return {
+      items: [],
+      omitted_count: 0
+    }
+  }
+
+  if (items.length <= keepAllThreshold || looksLikeBroadInventoryRequest(query)) {
+    return {
+      items,
+      omitted_count: 0
+    }
+  }
+
+  const ranked = items
+    .map((item, index) => {
+      let score = scoreInventoryMatch(query, valuesForItem(item))
+
+      if (projectBoostKeys?.has?.(item.project_key)) {
+        score += 4
+      }
+
+      return {
+        item,
+        index,
+        score
+      }
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+
+  const selected = (ranked.length > 0 ? ranked : items.slice(0, maxItems).map((item, index) => ({
+    item,
+    index,
+    score: 0
+  })))
+    .slice(0, maxItems)
+    .map((entry) => entry.item)
+
+  return {
+    items: selected,
+    omitted_count: Math.max(0, items.length - selected.length)
+  }
+}
+
+function buildPreparedContextLines(preparedContext, {
+  includeNextChecks = false
+} = {}) {
+  if (!preparedContext) {
+    return []
+  }
+
+  return [
+    preparedContext.summary ? `summary: ${preparedContext.summary}` : null,
+    Array.isArray(preparedContext.attention_rules) && preparedContext.attention_rules.length > 0
+      ? `attention_rules: ${preparedContext.attention_rules.slice(0, 3).join('；')}`
+      : null,
+    includeNextChecks && Array.isArray(preparedContext.next_checks) && preparedContext.next_checks.length > 0
+      ? `next_checks: ${preparedContext.next_checks.slice(0, 3).join('；')}`
+      : null
+  ].filter(Boolean)
+}
+
 export function buildManagerPlanningSystemPrompt({ managerProfile }) {
   const protocolRules = [
     'project_keys must only contain known project keys from the provided inventory.',
     'steps must be concrete and ordered.',
     'prefer 2 to 5 steps.',
     'operator_reply must answer the operator directly, in natural Chinese, and mention key project names only when relevant.',
+    'Treat the known projects, services, and routes as optional skills. Use them as grounding only when they materially help the current request.',
     'Use the project, service, and route inventories as grounding only; do not dump paths, ports, URLs, routes, or shell commands unless the operator explicitly asks for them.',
     'When operator preferences or operating rules are provided, follow them explicitly.',
     'When recent transcript or long-term memory is provided, preserve continuity with prior turns.',
     'If the request is ambiguous, include an initial inspection step instead of guessing.',
-    'If a request can be fulfilled by one stable built-in tool family such as project_*, infrastructure_*, server_ops_*, news_*, channel_feishu_*, or tool_catalog_*, prefer that tool-oriented step over generic shell execution.',
-    'When a stable built-in tool needs structured inputs, step notes must carry machine-readable inputs as key=value lines, for example document_id, folder_token, parent_node, space_id, app_token, table_id, record_id, or fields JSON.',
+    'Plan from the operator outcome first, not from the internal tool list. Decide whether the task can be completed directly with clear execution or API steps, and only use a capability pack when it is clearly the shortest reliable path.',
+    'Do not route generic external data work through unrelated capability packs. News-only capabilities are for news, headlines, or feed collection, not weather, calendars, docs, files, wiki, or generic structured data retrieval.',
+    'For weather or other structured external data requests, prefer a step that fetches one stable API or direct HTTP source, then feed the result into any follow-up workspace step.',
+    'When a stable capability needs structured inputs, step notes must carry machine-readable inputs as key=value lines, for example document_id, folder_token, parent_node, space_id, app_token, table_id, record_id, or fields JSON.',
+    'When the operator asks to create or update a Feishu doc/wiki/bitable item, emit a direct workspace step with structured title/content or target identifiers instead of detouring through capability inspection or unrelated data-source tools.',
     'If the operator is asking what changed, what was upgraded, or what new capabilities were added, do not pivot to unrelated service-health checks.',
     'When the operator asks to verify or assess recent changes, include at least one step that validates the claimed capability directly instead of only checking generic runtime health.',
     'depends_on uses 1-based step references in the JSON output and must only point to earlier steps.',
     'If you discover a possible new project, service, route, port, or publish path, report it as a candidate first and do not write it into the formal registry until the operator confirms.'
   ]
-
-  if (!managerProfile.codex_integration.allow_review) {
-    protocolRules.push('Do not emit review steps because Codex review is disabled in this environment.')
-  }
-
-  if (!managerProfile.codex_integration.allow_repair) {
-    protocolRules.push('Do not emit repair steps because Codex repair is disabled in this environment.')
-  }
 
   return buildPromptContract({
     sections: [
@@ -157,8 +262,9 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
       {
         title: 'TASK',
         lines: [
-          'Manage remote server projects and plan the next concrete actions.',
-          'Return an operational plan, not free-form commentary.'
+          'Plan the next concrete actions for the operator.',
+          'Use project and server capabilities only when the request truly needs them.',
+          'Return an actionable plan, not free-form commentary.'
         ]
       },
       {
@@ -174,7 +280,7 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
           '  "steps": [',
           '    {',
           '      "title": "action title",',
-          '      "kind": "inspect|operate|deploy|review|repair|report",',
+          '      "kind": "inspect|operate|report",',
           '      "notes": "why this step exists",',
           '      "depends_on": [1]',
           '    }',
@@ -203,7 +309,59 @@ export function buildManagerPlanningPrompt({
   attentionContext = null,
   preparedContext = null
 }) {
-  const inventory = projects
+  const operatorRequest = cleanString(message.text)
+    ?? JSON.stringify(message.content ?? message.raw_content ?? {})
+  const inventoryQuery = [
+    operatorRequest,
+    workingNote?.current_focus ?? null,
+    attentionContext?.primary_reference?.content ?? null
+  ].filter(Boolean).join('\n')
+  const relevantProjects = selectRelevantInventory(projects, {
+    query: inventoryQuery,
+    valuesForItem: (project) => [
+      project.project_key,
+      project.name,
+      project.role,
+      project.pm2_name,
+      project.public_base_path,
+      project.service_endpoint
+    ],
+    maxItems: 4,
+    keepAllThreshold: 3
+  })
+  const relevantProjectKeys = new Set(
+    relevantProjects.items.map((project) => project.project_key)
+  )
+  const relevantServices = selectRelevantInventory(serviceInventory, {
+    query: inventoryQuery,
+    valuesForItem: (service) => [
+      service.service_key,
+      service.project_key,
+      service.process_name,
+      service.listen_port,
+      service.healthcheck_url,
+      service.path_prefix
+    ],
+    projectBoostKeys: relevantProjectKeys,
+    maxItems: 4,
+    keepAllThreshold: 1
+  })
+  const relevantRoutes = selectRelevantInventory(routeInventory, {
+    query: inventoryQuery,
+    valuesForItem: (route) => [
+      route.route_key,
+      route.project_key,
+      route.service_key,
+      route.path_prefix,
+      route.public_url,
+      route.upstream_url,
+      route.static_root
+    ],
+    projectBoostKeys: relevantProjectKeys,
+    maxItems: 4,
+    keepAllThreshold: 1
+  })
+  const inventory = relevantProjects.items
     .map((project) => [
       `- key: ${project.project_key}`,
       `  tier: ${project.tier}`,
@@ -215,9 +373,6 @@ export function buildManagerPlanningPrompt({
       `  service_endpoint: ${project.service_endpoint ?? 'null'}`
     ].join('\n'))
     .join('\n')
-
-  const operatorRequest = cleanString(message.text)
-    ?? JSON.stringify(message.content ?? message.raw_content ?? {})
 
   const workingNoteLines = workingNote
     ? [
@@ -254,7 +409,7 @@ export function buildManagerPlanningPrompt({
         }
       : null,
     {
-      title: 'PROJECT INVENTORY',
+      title: 'PROJECT SKILLS',
       bullet: false,
       lines: [inventory]
     },
@@ -277,18 +432,9 @@ export function buildManagerPlanningPrompt({
     sections.push({
       title: 'PREPARED CONTEXT',
       bullet: false,
-      lines: [
-        preparedContext.summary ? `summary: ${preparedContext.summary}` : null,
-        Array.isArray(preparedContext.operator_focuses) && preparedContext.operator_focuses.length > 0
-          ? `operator_focuses: ${preparedContext.operator_focuses.join('；')}`
-          : null,
-        Array.isArray(preparedContext.likely_followups) && preparedContext.likely_followups.length > 0
-          ? `likely_followups: ${preparedContext.likely_followups.join('；')}`
-          : null,
-        Array.isArray(preparedContext.attention_rules) && preparedContext.attention_rules.length > 0
-          ? `attention_rules: ${preparedContext.attention_rules.join('；')}`
-          : null
-      ]
+      lines: buildPreparedContextLines(preparedContext, {
+        includeNextChecks: true
+      })
     })
   }
 
@@ -321,11 +467,19 @@ export function buildManagerPlanningPrompt({
     })
   }
 
-  if (serviceInventory.length > 0) {
+  if (relevantProjects.omitted_count > 0) {
     sections.push({
-      title: 'SERVICE REGISTRY',
+      title: 'PROJECT SKILL OMISSIONS',
       bullet: false,
-      lines: [serviceInventory
+      lines: [`omitted_projects: ${relevantProjects.omitted_count}`]
+    })
+  }
+
+  if (relevantServices.items.length > 0) {
+    sections.push({
+      title: 'SERVICE SIGNALS',
+      bullet: false,
+      lines: [relevantServices.items
         .map((service) => [
           `- key: ${service.service_key}`,
           `  project_key: ${service.project_key}`,
@@ -339,11 +493,19 @@ export function buildManagerPlanningPrompt({
     })
   }
 
-  if (routeInventory.length > 0) {
+  if (relevantServices.omitted_count > 0) {
     sections.push({
-      title: 'ROUTE REGISTRY',
+      title: 'SERVICE SIGNAL OMISSIONS',
       bullet: false,
-      lines: [routeInventory
+      lines: [`omitted_services: ${relevantServices.omitted_count}`]
+    })
+  }
+
+  if (relevantRoutes.items.length > 0) {
+    sections.push({
+      title: 'ROUTE SIGNALS',
+      bullet: false,
+      lines: [relevantRoutes.items
         .map((route) => [
           `- key: ${route.route_key}`,
           `  project_key: ${route.project_key}`,
@@ -356,6 +518,14 @@ export function buildManagerPlanningPrompt({
           `  status: ${route.status ?? 'null'}`
         ].join('\n'))
         .join('\n')]
+    })
+  }
+
+  if (relevantRoutes.omitted_count > 0) {
+    sections.push({
+      title: 'ROUTE SIGNAL OMISSIONS',
+      bullet: false,
+      lines: [`omitted_routes: ${relevantRoutes.omitted_count}`]
     })
   }
 
@@ -383,7 +553,7 @@ export function parseManagerPlanningResponse({
   }
 
   const summary = cleanString(parsed.summary)
-    ?? `总管已为 ${projectKeys.join('、') || '当前请求'} 生成处置计划。`
+    ?? `助手已为 ${projectKeys.join('、') || '当前请求'} 生成处置计划。`
   const operatorReply = cleanString(parsed.operator_reply)
     ?? `${summary} 当前共 ${steps.length} 步。`
 

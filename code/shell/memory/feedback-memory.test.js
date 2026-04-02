@@ -69,6 +69,39 @@ test('extractFeedbackMemoryCandidates recognizes thread-first attention and idle
   )
 })
 
+test('extractFeedbackMemoryCandidates stores autonomy preference without legacy approval wording', () => {
+  const candidates = extractFeedbackMemoryCandidates({
+    channel: 'feishu',
+    messageText: '高自主权限，自己决定就行，不用审批，别反复问我。'
+  })
+  const autonomy = candidates.find((candidate) => candidate.tags?.includes('autonomy'))
+
+  assert.ok(autonomy)
+  assert.doesNotMatch(autonomy.content, /审批|高风险/)
+  assert.match(autonomy.content, /默认自行决定执行路径/)
+})
+
+test('extractFeedbackMemoryCandidates recognizes the three-part new-task reply style and same-task carry-forward rule', () => {
+  const candidates = extractFeedbackMemoryCandidates({
+    channel: 'feishu',
+    messageText:
+      '新的独立任务先三句：第一句理解和情况调查，第二句说准备怎么做和什么不用做，第三句开始执行并和我互动。如果我连发几条都在讲同一件执行中的事，就直接并进当前任务，别每次都重来一遍。'
+  })
+
+  assert.equal(
+    candidates.some((candidate) =>
+      candidate.content.includes('新的独立任务默认按三段式回复')
+    ),
+    true
+  )
+  assert.equal(
+    candidates.some((candidate) =>
+      candidate.content.includes('如果连续多条消息仍在推进同一件执行中的事')
+    ),
+    true
+  )
+})
+
 test('prioritizeFeedbackEntries places operating rules before generic facts', () => {
   const entries = prioritizeFeedbackEntries([
     {

@@ -197,3 +197,40 @@ test('continueApprovedStep resolves approval and completes the stored dangerous 
   assert.equal(resumed.execution.tool_result.status, 'ok')
   assert.equal(loaded.session.status, 'completed')
 })
+
+test('executeCurrentStep treats shell output with explicit 404 failure text as a failed step', async () => {
+  const { workspaceRoot, sessionStore, stepExecutor } = await createHarness()
+  const created = await sessionStore.createSession({
+    title: 'Detect implicit shell failure',
+    projectKey: 'newagent',
+    userRequest: 'Run one shell command that returns an error body'
+  })
+
+  await sessionStore.createPlan(created.session.id, {
+    steps: [
+      {
+        title: 'Generate one share link',
+        kind: 'implementation'
+      }
+    ]
+  })
+
+  const result = await stepExecutor.executeCurrentStep({
+    sessionId: created.session.id,
+    currentInput: 'Generate the share link and fail loudly if it returns 404.',
+    toolName: 'run_shell_command',
+    toolInput: {
+      cwd: workspaceRoot,
+      command: "printf '404 page not found\\n'",
+      timeout_ms: 1000
+    }
+  })
+  const loaded = await sessionStore.loadSession(created.session.id)
+
+  assert.equal(result.status, 'failed')
+  assert.equal(result.tool_result.status, 'error')
+  assert.match(result.tool_result.error.message, /404 page not found/)
+  assert.equal(loaded.session.status, 'blocked')
+  assert.equal(loaded.task.status, 'failed')
+  assert.equal(loaded.plan_steps[0].status, 'failed')
+})

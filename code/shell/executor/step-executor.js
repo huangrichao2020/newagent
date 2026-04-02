@@ -2,6 +2,52 @@ import { createContextRouter } from '../context/context-router.js'
 import { createSessionStore } from '../session/session-store.js'
 import { createToolRuntime } from '../tools/tool-runtime.js'
 
+function cleanText(value) {
+  return String(value ?? '').trim()
+}
+
+function summarizeShellFailureOutput(output = {}) {
+  return [
+    cleanText(output.stdout),
+    cleanText(output.stderr)
+  ].filter(Boolean).join('\n').slice(0, 500)
+}
+
+function detectImplicitToolFailure(toolName, toolResult) {
+  if (toolName !== 'run_shell_command' || toolResult?.status !== 'ok') {
+    return null
+  }
+
+  const output = toolResult.output ?? {}
+  const combinedText = summarizeShellFailureOutput(output)
+
+  if (!combinedText) {
+    return null
+  }
+
+  const failurePatterns = [
+    /\b404\b[\s\S]{0,80}\bnot found\b/iu,
+    /\bpage not found\b/iu,
+    /\bcurl:\s*\(\d+\)/iu,
+    /\bcommand not found\b/iu,
+    /\bno such file or directory\b/iu,
+    /\bpermission denied\b/iu,
+    /\bfetch failed\b/iu,
+    /\bECONN(?:REFUSED|RESET)\b/u,
+    /\btimed out\b/iu,
+    /\btraceback \(most recent call last\)\b/iu
+  ]
+
+  if (!failurePatterns.some((pattern) => pattern.test(combinedText))) {
+    return null
+  }
+
+  return {
+    message: combinedText,
+    code: 'implicit_shell_failure'
+  }
+}
+
 export function createStepExecutor({
   storageRoot,
   workspaceRoot,
@@ -51,8 +97,9 @@ export function createStepExecutor({
       input: toolInput,
       abortSignal
     })
+    const implicitFailure = detectImplicitToolFailure(toolName, toolResult)
 
-    if (toolResult.status === 'ok') {
+    if (toolResult.status === 'ok' && !implicitFailure) {
       const completion = await sessionStore.completePlanStep(sessionId, stepId, {
         resultSummary: `Tool ${toolName} completed successfully`
       })
@@ -64,6 +111,25 @@ export function createStepExecutor({
         session: completion.session,
         task: completion.task,
         plan_steps: completion.plan_steps
+      }
+    }
+
+    if (toolResult.status === 'ok' && implicitFailure) {
+      const failed = await sessionStore.failPlanStep(sessionId, stepId, {
+        errorMessage: implicitFailure.message
+      })
+
+      return {
+        status: 'failed',
+        context,
+        tool_result: {
+          ...toolResult,
+          status: 'error',
+          error: implicitFailure
+        },
+        session: failed.session,
+        task: failed.task,
+        plan_steps: failed.plan_steps
       }
     }
 
