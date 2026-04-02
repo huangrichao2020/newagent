@@ -1489,7 +1489,8 @@ function buildFeishuConversationPrompt({
   longTermMemory = [],
   recentTranscript = [],
   operatorRules = [],
-  preparedContext = null
+  preparedContext = null,
+  continuity = null
 }) {
   const sections = [
     {
@@ -1513,7 +1514,8 @@ function buildFeishuConversationPrompt({
     })
   }
 
-  if (preparedContext?.summary) {
+  // 只在同任务续接时使用 prepared_context，新任务默认不吃旧上下文
+  if (preparedContext?.summary && (continuity?.kind === 'same_task' || continuity?.score >= 0.6)) {
     sections.push({
       title: 'PREPARED CONTEXT',
       bullet: false,
@@ -2795,6 +2797,15 @@ export function createServerManagerRuntime({
 
     try {
       const snapshot = await sessionStore.loadSession(sessionId)
+
+      // 只在任务完成后才生成 prepared_context，进行中任务不干扰
+      if (snapshot.task.status !== 'completed') {
+        return {
+          status: 'skipped',
+          reason: 'task_not_completed'
+        }
+      }
+
       const feedbackRules = await memoryStore.searchMemoryEntries({
         sessionId,
         scope: 'project',
@@ -2821,6 +2832,8 @@ export function createServerManagerRuntime({
       const recentTranscript = buildTranscriptLines(snapshot.timeline, {
         maxMessages: 12
       })
+
+      // 简化背景预计算：不吃旧 prepared_context，避免污染
       const providerResult = await bailianProvider.invokeByIntent({
         intent: 'background',
         systemPrompt: buildFeishuBackgroundPrecomputeSystemPrompt(),
@@ -2829,7 +2842,7 @@ export function createServerManagerRuntime({
           recentTranscript,
           longTermMemory,
           operatorRules,
-          preparedContext: channelState.prepared_context ?? null
+          preparedContext: null
         })
       })
       const preparedContext = parseFeishuBackgroundPrecomputeResponse({
@@ -2837,16 +2850,20 @@ export function createServerManagerRuntime({
       })
       const currentAt = nowIso()
 
+      // 只保留 ready_replies，丢弃可能导致污染的 operator_focuses/next_checks
+      const sanitizedPreparedContext = {
+        ready_replies: preparedContext.ready_replies ?? [],
+        summary: preparedContext.summary ?? null,
+        generated_at: currentAt,
+        provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+        model: providerResult.route.model
+      }
+
       await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
         ...channelState,
         updated_at: currentAt,
         last_background_precompute_at: currentAt,
-        prepared_context: {
-          ...preparedContext,
-          generated_at: currentAt,
-          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
-          model: providerResult.route.model
-        },
+        prepared_context: sanitizedPreparedContext,
         version: 1
       })
       await sessionStore.appendTimelineEvent(sessionId, {
@@ -2855,8 +2872,8 @@ export function createServerManagerRuntime({
         payload: {
           model: providerResult.route.model,
           provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
-          ready_reply_count: preparedContext.ready_replies.length,
-          focus_count: preparedContext.operator_focuses.length
+          ready_reply_count: sanitizedPreparedContext.ready_replies.length,
+          focus_count: 0
         },
         at: currentAt
       })
@@ -2868,14 +2885,14 @@ export function createServerManagerRuntime({
         payload: {
           model: providerResult.route.model,
           provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
-          ready_reply_count: preparedContext.ready_replies.length,
-          focus_count: preparedContext.operator_focuses.length
+          ready_reply_count: sanitizedPreparedContext.ready_replies.length,
+          focus_count: 0
         }
       })
 
       return {
         status: 'prepared',
-        prepared_context: preparedContext
+        prepared_context: sanitizedPreparedContext
       }
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
@@ -2898,7 +2915,8 @@ export function createServerManagerRuntime({
     sessionId,
     message,
     snapshot,
-    attentionContext
+    attentionContext,
+    continuity = null
   }) {
     const request = cleanText(buildOperatorRequest(message))
     const preparedContext = await loadPreparedFeishuContext(sessionId)
@@ -2970,7 +2988,8 @@ export function createServerManagerRuntime({
         longTermMemory,
         recentTranscript,
         operatorRules,
-        preparedContext
+        preparedContext,
+        continuity
       })
     })
 
@@ -4868,7 +4887,8 @@ export function createServerManagerRuntime({
             sessionId,
             message,
             snapshot: currentSnapshot,
-            attentionContext
+            attentionContext,
+            continuity: activeTurn.continuity
           })
           ackText = directReply.text
           await completeConversationReplySession({
