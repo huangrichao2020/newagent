@@ -7,7 +7,7 @@ import { createProjectRegistry } from '../projects/project-registry.js'
 import { createSessionStore } from '../session/session-store.js'
 import {
   createAgentExecutor,
-  selectManagerToolForStep
+  selectAgentToolForStep
 } from './agent-executor.js'
 import { createAgentProfile } from './agent-profile.js'
 
@@ -58,7 +58,7 @@ async function createHarness() {
     }
   ])
 
-  const managerProfile = createAgentProfile({
+  const agentProfile = createAgentProfile({
     env: {}
   })
 
@@ -67,8 +67,8 @@ async function createHarness() {
     workspaceRoot,
     sessionStore,
     projectRegistry,
-    managerProfile,
-    managerExecutor: createAgentExecutor({
+    agentProfile,
+    agentExecutor: createAgentExecutor({
       storageRoot,
       workspaceRoot,
       codexCommand: '/bin/echo',
@@ -80,12 +80,12 @@ async function createHarness() {
           return `health ok ${url}`
         }
       }),
-      managerProfile
+      agentProfile
     })
   }
 }
 
-test('selectManagerToolForStep maps inspect steps to safe registry and probe tools', () => {
+test('selectAgentToolForStep maps inspect steps to safe registry and probe tools', () => {
   const projects = [
     {
       project_key: 'uwillberich',
@@ -94,31 +94,31 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
     }
   ]
 
-  const listSelection = selectManagerToolForStep({
+  const listSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '盘一下当前项目基线'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const getSelection = selectManagerToolForStep({
+  const getSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '检查 uwillberich 当前配置'
     },
     projects,
-    managerProjectKeys: ['uwillberich']
+    agentProjectKeys: ['uwillberich']
   })
-  const probeSelection = selectManagerToolForStep({
+  const probeSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '检查 uwillberich API 在线状态'
     },
     projects,
-    managerProjectKeys: ['uwillberich']
+    agentProjectKeys: ['uwillberich']
   })
-  const pm2Selection = selectManagerToolForStep({
+  const pm2Selection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '检查 uwillberich PM2 进程状态'
@@ -129,47 +129,47 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
         pm2_name: 'uwillberich-api'
       }
     ],
-    managerProjectKeys: ['uwillberich']
+    agentProjectKeys: ['uwillberich']
   })
-  const infrastructureSelection = selectManagerToolForStep({
+  const infrastructureSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '确认 3800 和 /apps/chaochao/ 分别归谁'
     },
     projects,
-    managerProjectKeys: ['uwillberich']
+    agentProjectKeys: ['uwillberich']
   })
-  const serviceMatrixSelection = selectManagerToolForStep({
+  const serviceMatrixSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '盘一下服务器整体在线情况'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const capabilitySelection = selectManagerToolForStep({
+  const capabilitySelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '看看当前 ssh 和协作通道能力'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const networkSelection = selectManagerToolForStep({
+  const networkSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '检查当前服务器网络接口'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const projectResolveSelection = selectManagerToolForStep({
+  const projectResolveSelection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '确认 deploy-hub 的源码路径和 service endpoint 归谁'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
 
   assert.equal(listSelection.tool_name, 'project_list_registry')
@@ -185,61 +185,61 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
   assert.equal(infrastructureSelection.tool_input.path_prefix, '/apps/chaochao/')
 })
 
-test('selectManagerToolForStep maps Feishu workspace CRUD requests to concrete tools', () => {
+test('selectAgentToolForStep maps Feishu workspace CRUD requests to concrete tools', () => {
   const projects = []
 
-  const docCreateSelection = selectManagerToolForStep({
+  const docCreateSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '创建飞书文档《今晚日报》',
       notes: 'folder_token=fldcn_parent\ncontent=# 今晚安排\ncontent_type=markdown'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const docWriteSelection = selectManagerToolForStep({
+  const docWriteSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '往飞书文档追加内容',
       notes: 'document_id=doccn123\ncontent=## 最新进展'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const driveUploadSelection = selectManagerToolForStep({
+  const driveUploadSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '上传 README 到飞书云盘',
       notes: 'parent_node=fldcn_parent\nfile_path=./README.md'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const wikiCreateSelection = selectManagerToolForStep({
+  const wikiCreateSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '在飞书知识库创建文档《作战手册》',
       notes: 'space_id=spc123'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const bitableCreateSelection = selectManagerToolForStep({
+  const bitableCreateSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '创建飞书多维表格《任务看板》'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
-  const bitableRecordSelection = selectManagerToolForStep({
+  const bitableRecordSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '在飞书多维表格里新增记录',
       notes: 'app_token=appcn123\ntable_id=tblcn456\nfields={"状态":"进行中","负责人":"老板"}'
     },
     projects,
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
 
   assert.equal(docCreateSelection.action, 'tool')
@@ -279,7 +279,7 @@ test('selectManagerToolForStep maps Feishu workspace CRUD requests to concrete t
   })
 })
 
-test('selectManagerToolForStep treats weather-data inspection as direct execution instead of project fallback', () => {
+test('selectAgentToolForStep treats weather-data inspection as direct execution instead of project fallback', () => {
   const projects = [
     {
       project_key: 'deploy-hub',
@@ -288,13 +288,13 @@ test('selectManagerToolForStep treats weather-data inspection as direct executio
     }
   ]
 
-  const selection = selectManagerToolForStep({
+  const selection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '检查杭州天气数据抓取进度'
     },
     projects,
-    managerProjectKeys: [],
+    agentProjectKeys: [],
     operatorRequest: '查一下杭州天气并建个文档发我'
   })
 
@@ -303,14 +303,14 @@ test('selectManagerToolForStep treats weather-data inspection as direct executio
   assert.equal(selection.project, null)
 })
 
-test('selectManagerToolForStep infers a weather-doc title when the planner omits structured metadata', () => {
-  const selection = selectManagerToolForStep({
+test('selectAgentToolForStep infers a weather-doc title when the planner omits structured metadata', () => {
+  const selection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '创建飞书文档并填入数据'
     },
     projects: [],
-    managerProjectKeys: [],
+    agentProjectKeys: [],
     operatorRequest: '查一下杭州近 7 天天气并建个文档发我'
   })
 
@@ -319,8 +319,8 @@ test('selectManagerToolForStep infers a weather-doc title when the planner omits
   assert.equal(selection.tool_input.title, '杭州近 7 天天气报告')
 })
 
-test('selectManagerToolForStep rejects legacy review and repair step kinds in the default agent loop', async () => {
-  const { workspaceRoot, managerProfile } = await createHarness()
+test('selectAgentToolForStep rejects legacy review and repair step kinds in the default agent loop', async () => {
+  const { workspaceRoot, agentProfile } = await createHarness()
   const projects = [
     {
       project_key: 'uwillberich',
@@ -329,37 +329,37 @@ test('selectManagerToolForStep rejects legacy review and repair step kinds in th
     }
   ]
 
-  const reviewSelection = selectManagerToolForStep({
+  const reviewSelection = selectAgentToolForStep({
     step: {
       kind: 'review',
       title: 'Review uwillberich 发布链风险'
     },
     projects,
-    managerProjectKeys: ['uwillberich'],
+    agentProjectKeys: ['uwillberich'],
     workspaceRoot,
     operatorRequest: '检查发布链',
-    managerProfile
+    agentProfile
   })
-  const repairSelection = selectManagerToolForStep({
+  const repairSelection = selectAgentToolForStep({
     step: {
       kind: 'repair',
       title: '修复 uwillberich 发布链'
     },
     projects,
-    managerProjectKeys: ['uwillberich'],
+    agentProjectKeys: ['uwillberich'],
     workspaceRoot,
     operatorRequest: '修复发布链',
-    managerProfile
+    agentProfile
   })
-  const reportSelection = selectManagerToolForStep({
+  const reportSelection = selectAgentToolForStep({
     step: {
       kind: 'report',
       title: '汇报当前巡检结论'
     },
     projects,
-    managerProjectKeys: ['uwillberich'],
+    agentProjectKeys: ['uwillberich'],
     workspaceRoot,
-    managerProfile
+    agentProfile
   })
 
   assert.equal(reviewSelection.supported, false)
@@ -369,14 +369,14 @@ test('selectManagerToolForStep rejects legacy review and repair step kinds in th
   assert.equal(reportSelection.action, 'report')
 })
 
-test('selectManagerToolForStep maps internal tool-catalog requests to capability summaries instead of raw tool listings', () => {
-  const selection = selectManagerToolForStep({
+test('selectAgentToolForStep maps internal tool-catalog requests to capability summaries instead of raw tool listings', () => {
+  const selection = selectAgentToolForStep({
     step: {
       kind: 'inspect',
       title: '看看现在有哪些内部能力，不要给我工具目录'
     },
     projects: [],
-    managerProjectKeys: []
+    agentProjectKeys: []
   })
 
   assert.equal(selection.supported, true)
@@ -384,7 +384,7 @@ test('selectManagerToolForStep maps internal tool-catalog requests to capability
   assert.equal(selection.tool_name, 'server_ops_capability_matrix')
 })
 
-test('selectManagerToolForStep maps operate and deploy steps to execution planning', async () => {
+test('selectAgentToolForStep maps operate and deploy steps to execution planning', async () => {
   const { workspaceRoot } = await createHarness()
   const projects = [
     {
@@ -395,22 +395,22 @@ test('selectManagerToolForStep maps operate and deploy steps to execution planni
     }
   ]
 
-  const operateSelection = selectManagerToolForStep({
+  const operateSelection = selectAgentToolForStep({
     step: {
       kind: 'operate',
       title: '重启 deploy-hub 服务'
     },
     projects,
-    managerProjectKeys: ['deploy-hub'],
+    agentProjectKeys: ['deploy-hub'],
     workspaceRoot
   })
-  const deploySelection = selectManagerToolForStep({
+  const deploySelection = selectAgentToolForStep({
     step: {
       kind: 'deploy',
       title: '发布 deploy-hub 到线上'
     },
     projects,
-    managerProjectKeys: ['deploy-hub'],
+    agentProjectKeys: ['deploy-hub'],
     workspaceRoot
   })
 
@@ -421,10 +421,10 @@ test('selectManagerToolForStep maps operate and deploy steps to execution planni
 })
 
 test('executeCurrentManagerStep executes one safe inspect step and advances the session', async () => {
-  const { sessionStore, managerExecutor } = await createHarness()
+  const { sessionStore, agentExecutor } = await createHarness()
   const created = await sessionStore.createSession({
-    title: 'Run one manager inspect step',
-    projectKey: 'remote-server-manager',
+    title: 'Run one agent inspect step',
+    projectKey: 'remote-agent',
     userRequest: 'Inspect the stock project'
   })
 
@@ -438,14 +438,14 @@ test('executeCurrentManagerStep executes one safe inspect step and advances the 
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['uwillberich']
     }
   })
 
-  const result = await managerExecutor.executeCurrentManagerStep({
+  const result = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id
   })
   const loaded = await sessionStore.loadSession(created.session.id)
@@ -454,15 +454,15 @@ test('executeCurrentManagerStep executes one safe inspect step and advances the 
   assert.equal(result.selection.tool_name, 'project_get_registry')
   assert.match(result.summary, /已读取项目 uwillberich 配置/)
   assert.equal(loaded.session.status, 'completed')
-  assert.ok(loaded.timeline.some((event) => event.kind === 'manager_tool_selected'))
-  assert.ok(loaded.timeline.some((event) => event.kind === 'manager_step_executed'))
+  assert.ok(loaded.timeline.some((event) => event.kind === 'agent_tool_selected'))
+  assert.ok(loaded.timeline.some((event) => event.kind === 'agent_step_executed'))
 })
 
 test('runManagerLoop can execute inspect and report steps in one loop', async () => {
-  const { sessionStore, managerExecutor } = await createHarness()
+  const { sessionStore, agentExecutor } = await createHarness()
   const created = await sessionStore.createSession({
-    title: 'Loop safe manager steps',
-    projectKey: 'remote-server-manager',
+    title: 'Loop safe agent steps',
+    projectKey: 'remote-agent',
     userRequest: 'Inspect uwillberich and then report back'
   })
 
@@ -480,14 +480,14 @@ test('runManagerLoop can execute inspect and report steps in one loop', async ()
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['uwillberich']
     }
   })
 
-  const result = await managerExecutor.runManagerLoop({
+  const result = await agentExecutor.runManagerLoop({
     sessionId: created.session.id,
     maxSteps: 2
   })
@@ -498,16 +498,16 @@ test('runManagerLoop can execute inspect and report steps in one loop', async ()
   assert.equal(result.runs[1].selection.action, 'report')
   assert.match(result.runs[0].summary, /已读取项目 uwillberich 配置/)
   assert.match(result.runs[1].report_text, /阶段汇报：/)
-  assert.ok(loaded.timeline.some((event) => event.kind === 'manager_report_generated'))
+  assert.ok(loaded.timeline.some((event) => event.kind === 'agent_report_generated'))
   assert.ok(loaded.timeline.some((event) => event.kind === 'assistant_message_added'))
   assert.equal(result.session.status, 'completed')
 })
 
 test('runManagerLoop defers legacy repair steps instead of entering a dedicated repair mode', async () => {
-  const { sessionStore, managerExecutor } = await createHarness()
+  const { sessionStore, agentExecutor } = await createHarness()
   const created = await sessionStore.createSession({
     title: 'Manager repair auto execution flow',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Repair the remote stock project'
   })
 
@@ -525,14 +525,14 @@ test('runManagerLoop defers legacy repair steps instead of entering a dedicated 
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['uwillberich']
     }
   })
 
-  const result = await managerExecutor.runManagerLoop({
+  const result = await agentExecutor.runManagerLoop({
     sessionId: created.session.id,
     maxSteps: 2
   })
@@ -547,7 +547,7 @@ test('runManagerLoop defers legacy repair steps instead of entering a dedicated 
 
 test('executeCurrentManagerStep plans one deploy command and executes it immediately', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
-  const managerExecutor = createAgentExecutor({
+  const agentExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -594,7 +594,7 @@ test('executeCurrentManagerStep plans one deploy command and executes it immedia
   })
   const created = await sessionStore.createSession({
     title: 'Manager deploy approval flow',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Deploy deploy-hub'
   })
 
@@ -607,14 +607,14 @@ test('executeCurrentManagerStep plans one deploy command and executes it immedia
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['deploy-hub']
     }
   })
 
-  const result = await managerExecutor.executeCurrentManagerStep({
+  const result = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id
   })
   const loaded = await sessionStore.loadSession(created.session.id)
@@ -631,7 +631,7 @@ test('executeCurrentManagerStep plans one deploy command and executes it immedia
 test('executeCurrentManagerStep notifies before one restart-like deploy command', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
   const notices = []
-  const managerExecutor = createAgentExecutor({
+  const agentExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -674,7 +674,7 @@ test('executeCurrentManagerStep notifies before one restart-like deploy command'
   })
   const created = await sessionStore.createSession({
     title: 'Manager deploy continue flow',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Deploy deploy-hub'
   })
 
@@ -687,14 +687,14 @@ test('executeCurrentManagerStep notifies before one restart-like deploy command'
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['deploy-hub']
     }
   })
 
-  const result = await managerExecutor.executeCurrentManagerStep({
+  const result = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id,
     onBeforeToolExecution: async ({ selection, step }) => {
       notices.push({
@@ -716,8 +716,8 @@ test('executeCurrentManagerStep notifies before one restart-like deploy command'
 })
 
 test('executeCurrentManagerStep rejects execution cwd values outside the target project roots', async () => {
-  const { sessionStore, storageRoot, workspaceRoot, managerProfile } = await createHarness()
-  const managerExecutor = createAgentExecutor({
+  const { sessionStore, storageRoot, workspaceRoot, agentProfile } = await createHarness()
+  const agentExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -756,11 +756,11 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
         }
       }
     },
-    managerProfile
+    agentProfile
   })
   const created = await sessionStore.createSession({
     title: 'Reject out-of-root execution cwd',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Deploy deploy-hub safely'
   })
 
@@ -773,14 +773,14 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['deploy-hub']
     }
   })
 
-  const result = await managerExecutor.executeCurrentManagerStep({
+  const result = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id
   })
   const loaded = await sessionStore.loadSession(created.session.id)
@@ -795,7 +795,7 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
 
 test('continueApprovedManagerStep executes one approved deploy command and completes the step', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
-  const managerExecutor = createAgentExecutor({
+  const agentExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -838,7 +838,7 @@ test('continueApprovedManagerStep executes one approved deploy command and compl
   })
   const created = await sessionStore.createSession({
     title: 'Manager deploy continue flow',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Deploy deploy-hub'
   })
 
@@ -851,19 +851,19 @@ test('continueApprovedManagerStep executes one approved deploy command and compl
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['deploy-hub']
     }
   })
 
-  const waiting = await managerExecutor.executeCurrentManagerStep({
+  const waiting = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id
   })
   const approvalId = waiting.execution.approvals[0].id
 
-  const continued = await managerExecutor.continueApprovedManagerStep({
+  const continued = await agentExecutor.continueApprovedManagerStep({
     sessionId: created.session.id,
     approvalId,
     currentInput: '继续'
@@ -878,8 +878,8 @@ test('continueApprovedManagerStep executes one approved deploy command and compl
 })
 
 test('executeCurrentManagerStep rejects execution cwd values outside the target project roots', async () => {
-  const { sessionStore, storageRoot, workspaceRoot, managerProfile } = await createHarness()
-  const managerExecutor = createAgentExecutor({
+  const { sessionStore, storageRoot, workspaceRoot, agentProfile } = await createHarness()
+  const agentExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -918,11 +918,11 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
         }
       }
     },
-    managerProfile
+    agentProfile
   })
   const created = await sessionStore.createSession({
     title: 'Reject out-of-root execution cwd',
-    projectKey: 'remote-server-manager',
+    projectKey: 'remote-agent',
     userRequest: 'Deploy deploy-hub safely'
   })
 
@@ -935,14 +935,14 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
     ]
   })
   await sessionStore.appendTimelineEvent(created.session.id, {
-    kind: 'manager_plan_generated',
-    actor: 'manager:planner',
+    kind: 'agent_plan_generated',
+    actor: 'agent:planner',
     payload: {
       project_keys: ['deploy-hub']
     }
   })
 
-  const result = await managerExecutor.executeCurrentManagerStep({
+  const result = await agentExecutor.executeCurrentManagerStep({
     sessionId: created.session.id
   })
   const loaded = await sessionStore.loadSession(created.session.id)

@@ -1560,7 +1560,7 @@ export function createAgentExecutor({
     }
   }
 
-  async function executeCurrentManagerStep({
+  async function executeCurrentAgentStep({
     sessionId,
     currentInput = null,
     skillRefs = [],
@@ -1708,7 +1708,7 @@ export function createAgentExecutor({
     }
   }
 
-  async function runManagerLoop({
+  async function runAgentLoop({
     sessionId,
     currentInput = null,
     maxSteps = 4,
@@ -1741,7 +1741,7 @@ export function createAgentExecutor({
         return finalizeLoop('stopped')
       }
 
-      const result = await executeCurrentManagerStep({
+      const result = await executeCurrentAgentStep({
         sessionId,
         currentInput,
         skillRefs,
@@ -1775,8 +1775,7 @@ export function createAgentExecutor({
   }
 
   return {
-    executeCurrentManagerStep,
-    runManagerLoop,
-    runSafeInspectLoop
+    executeCurrentAgentStep,
+    runAgentLoop
   }
 }

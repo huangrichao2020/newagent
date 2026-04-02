@@ -1,21 +1,21 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildManagerQualityReviewPrompt,
-  buildManagerQualityReviewSystemPrompt,
-  parseManagerQualityReviewResponse
+  buildAgentQualityReviewPrompt,
+  buildAgentQualityReviewSystemPrompt,
+  parseAgentQualityReviewResponse
 } from './quality-review.js'
 
-test('buildManagerQualityReviewSystemPrompt defines a structured reviewer contract', () => {
-  const prompt = buildManagerQualityReviewSystemPrompt()
+test('buildAgentQualityReviewSystemPrompt defines a structured reviewer contract', () => {
+  const prompt = buildAgentQualityReviewSystemPrompt()
 
   assert.match(prompt, /ROLE:/)
   assert.match(prompt, /OUTPUT CONTRACT:/)
   assert.match(prompt, /"verdict": "pass\|warn\|block"/)
 })
 
-test('buildManagerQualityReviewPrompt includes plan review context', () => {
-  const prompt = buildManagerQualityReviewPrompt({
+test('buildAgentQualityReviewPrompt includes plan review context', () => {
+  const prompt = buildAgentQualityReviewPrompt({
     mode: 'plan_review',
     operatorRequest: '继续刚才那个 deploy 问题',
     sessionSummary: '上一轮已经确认 deploy-hub 正常。',
@@ -39,8 +39,8 @@ test('buildManagerQualityReviewPrompt includes plan review context', () => {
   assert.match(prompt, /deploy-hub 正常/)
 })
 
-test('buildManagerQualityReviewPrompt shows 1-based depends_on references to the reviewer', () => {
-  const prompt = buildManagerQualityReviewPrompt({
+test('buildAgentQualityReviewPrompt shows 1-based depends_on references to the reviewer', () => {
+  const prompt = buildAgentQualityReviewPrompt({
     mode: 'plan_review',
     plan: {
       summary: '检查步骤依赖',
@@ -64,8 +64,8 @@ test('buildManagerQualityReviewPrompt shows 1-based depends_on references to the
   assert.doesNotMatch(prompt, /"dependsOn": \[\s*0\s*\]/)
 })
 
-test('parseManagerQualityReviewResponse normalizes verdict and arrays', () => {
-  const review = parseManagerQualityReviewResponse({
+test('parseAgentQualityReviewResponse normalizes verdict and arrays', () => {
+  const review = parseAgentQualityReviewResponse({
     text: JSON.stringify({
       verdict: 'warn',
       summary: '外部复核发现上下文衔接不够稳。',

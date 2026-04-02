@@ -78,7 +78,7 @@ function serializePlanForReview(plan) {
   }
 }
 
-export function buildManagerQualityReviewSystemPrompt() {
+export function buildAgentQualityReviewSystemPrompt() {
   return buildPromptContract({
     sections: [
       {
@@ -122,7 +122,7 @@ export function buildManagerQualityReviewSystemPrompt() {
   })
 }
 
-export function buildManagerQualityReviewPrompt({
+export function buildAgentQualityReviewPrompt({
   mode,
   operatorRequest = null,
   sessionSummary = null,
@@ -182,7 +182,7 @@ export function buildManagerQualityReviewPrompt({
   })
 }
 
-export function parseManagerQualityReviewResponse({ text }) {
+export function parseAgentQualityReviewResponse({ text }) {
   const parsed = JSON.parse(extractJsonObject(text))
   const issues = normalizeStringArray(parsed.issues)
   const constraints = normalizeStringArray(parsed.constraints)

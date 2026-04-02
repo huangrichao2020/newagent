@@ -1,18 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  buildManagerPlanningPrompt,
-  buildManagerPlanningSystemPrompt,
-  parseManagerPlanningResponse
+  buildAgentPlanningPrompt,
+  buildAgentPlanningSystemPrompt,
+  parseAgentPlanningResponse
 } from './agent-planner.js'
 import {
   createAgentProfile,
   getAliyunSeedProjects
 } from './agent-profile.js'
 
-test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', () => {
-  const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createAgentProfile()
+test('buildAgentPlanningSystemPrompt returns the JSON-only planner contract', () => {
+  const prompt = buildAgentPlanningSystemPrompt({
+    agentProfile: createAgentProfile()
   })
 
   assert.match(prompt, /ROLE:/)
@@ -23,9 +23,9 @@ test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', 
   assert.match(prompt, /operator_reply/)
 })
 
-test('buildManagerPlanningSystemPrompt frames the default loop as a generic agent with project skills', () => {
-  const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createAgentProfile()
+test('buildAgentPlanningSystemPrompt frames the default loop as a generic agent with project skills', () => {
+  const prompt = buildAgentPlanningSystemPrompt({
+    agentProfile: createAgentProfile()
   })
 
   assert.match(prompt, /Use project and server capabilities only when the request truly needs them/)
@@ -34,9 +34,9 @@ test('buildManagerPlanningSystemPrompt frames the default loop as a generic agen
   assert.doesNotMatch(prompt, /review\|repair/)
 })
 
-test('buildManagerPlanningSystemPrompt constrains change-summary requests and dependency numbering', () => {
-  const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createAgentProfile()
+test('buildAgentPlanningSystemPrompt constrains change-summary requests and dependency numbering', () => {
+  const prompt = buildAgentPlanningSystemPrompt({
+    agentProfile: createAgentProfile()
   })
 
   assert.match(prompt, /what changed, what was upgraded/)
@@ -48,9 +48,9 @@ test('buildManagerPlanningSystemPrompt constrains change-summary requests and de
   assert.match(prompt, /document_id.*folder_token.*app_token/)
 })
 
-test('buildManagerPlanningSystemPrompt narrows capability routing for weather and Feishu workspace requests', () => {
-  const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createAgentProfile()
+test('buildAgentPlanningSystemPrompt narrows capability routing for weather and Feishu workspace requests', () => {
+  const prompt = buildAgentPlanningSystemPrompt({
+    agentProfile: createAgentProfile()
   })
 
   assert.match(prompt, /Do not route generic external data work through unrelated capability packs/)
@@ -59,8 +59,8 @@ test('buildManagerPlanningSystemPrompt narrows capability routing for weather an
   assert.match(prompt, /direct workspace step with structured title\/content/)
 })
 
-test('buildManagerPlanningPrompt includes the operator request and project skills', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt includes the operator request and project skills', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: 'Check uwillberich publishing state.'
     },
@@ -74,8 +74,8 @@ test('buildManagerPlanningPrompt includes the operator request and project skill
   assert.match(prompt, /Check uwillberich publishing state/)
 })
 
-test('buildManagerPlanningPrompt includes operator feedback rules when available', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt includes operator feedback rules when available', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: '帮我看看线上到底哪块坏了'
     },
@@ -97,8 +97,8 @@ test('buildManagerPlanningPrompt includes operator feedback rules when available
   assert.match(prompt, /复杂问题先说明正在理解或排查/)
 })
 
-test('buildManagerPlanningPrompt includes session continuity context when available', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt includes session continuity context when available', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: '继续刚才那个 deploy 异常'
     },
@@ -120,8 +120,8 @@ test('buildManagerPlanningPrompt includes session continuity context when availa
   assert.match(prompt, /继续查 uwillberich/)
 })
 
-test('buildManagerPlanningPrompt includes attention stack and prepared context when available', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt includes attention stack and prepared context when available', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: '是不是大改了，主要改了哪里？'
     },
@@ -157,8 +157,8 @@ test('buildManagerPlanningPrompt includes attention stack and prepared context w
   assert.match(prompt, /不要先倒项目表/)
 })
 
-test('buildManagerPlanningPrompt includes service and route registry context when available', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt includes service and route registry context when available', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: '帮我确认 3800 和 /apps/chaochao/ 分别归谁'
     },
@@ -192,8 +192,8 @@ test('buildManagerPlanningPrompt includes service and route registry context whe
   assert.match(prompt, /\/opt\/agent-sites\/chaochao\/current\/index\.html/)
 })
 
-test('buildManagerPlanningPrompt narrows inventory to the most relevant project, service, and route matches', () => {
-  const prompt = buildManagerPlanningPrompt({
+test('buildAgentPlanningPrompt narrows inventory to the most relevant project, service, and route matches', () => {
+  const prompt = buildAgentPlanningPrompt({
     message: {
       text: '帮我发布 deploy-hub，并确认 3900 和 /apps/ 的状态'
     },
@@ -237,8 +237,8 @@ test('buildManagerPlanningPrompt narrows inventory to the most relevant project,
   assert.doesNotMatch(prompt, /novel-evolution-web/)
 })
 
-test('parseManagerPlanningResponse normalizes a fenced JSON plan', () => {
-  const plan = parseManagerPlanningResponse({
+test('parseAgentPlanningResponse normalizes a fenced JSON plan', () => {
+  const plan = parseAgentPlanningResponse({
     text: [
       '```json',
       JSON.stringify({
@@ -271,8 +271,8 @@ test('parseManagerPlanningResponse normalizes a fenced JSON plan', () => {
   assert.deepEqual(plan.steps[1].dependsOn, [0])
 })
 
-test('parseManagerPlanningResponse drops invalid or future dependency references', () => {
-  const plan = parseManagerPlanningResponse({
+test('parseAgentPlanningResponse drops invalid or future dependency references', () => {
+  const plan = parseAgentPlanningResponse({
     text: JSON.stringify({
       summary: '测试依赖关系清洗。',
       project_keys: ['uwillberich'],

@@ -13,7 +13,7 @@ import { createAgentProfile } from './agent-profile.js'
 async function createHarness({
   nowFn = Date.now,
   enableExternalReview = false,
-  managerExecutor = null,
+  agentExecutor = null,
   feishuAppendMergeWindowMs = undefined,
   plannerDelayMs = 0,
   fetchDelayMs = 0,
@@ -31,7 +31,7 @@ async function createHarness({
     constraints: []
   }
 } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-'))
   const storageRoot = join(root, 'storage')
   const workspaceRoot = join(root, 'workspace')
   const replies = []
@@ -42,7 +42,7 @@ async function createHarness({
   const backgroundCalls = []
   const providerCalls = []
   let generatedReplyId = 0
-  const managerProfile = createAgentProfile({
+  const agentProfile = createAgentProfile({
     env: enableExternalReview
       ? {
           NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
@@ -162,8 +162,8 @@ async function createHarness({
     runtime: createAgentRuntime({
       storageRoot,
       workspaceRoot,
-      managerProfile,
-      managerExecutor,
+      agentProfile,
+      agentExecutor,
       nowFn,
       feishuAppendMergeWindowMs,
       progressReplyDelayMs,
@@ -205,7 +205,7 @@ async function createHarness({
                 model: 'stepfun/step-3.5-flash:free'
               },
               response: {
-                id: 'chatcmpl-manager-evaluate',
+                id: 'chatcmpl-agent-evaluate',
                 model: 'stepfun/step-3.5-flash:free',
                 finish_reason: 'stop',
                 usage: {
@@ -229,7 +229,7 @@ async function createHarness({
                 model: 'stepfun/step-3.5-flash:free'
               },
               response: {
-                id: 'chatcmpl-manager-background',
+                id: 'chatcmpl-agent-background',
                 model: 'stepfun/step-3.5-flash:free',
                 finish_reason: 'stop',
                 usage: {
@@ -266,7 +266,7 @@ async function createHarness({
                 model: 'qwen3.5-plus'
               },
               response: {
-                id: 'chatcmpl-manager-conversation',
+                id: 'chatcmpl-agent-conversation',
                 model: 'qwen3.5-plus',
                 finish_reason: 'stop',
                 usage: {
@@ -290,7 +290,7 @@ async function createHarness({
                 model: 'qwen3.5-plus'
               },
               response: {
-                id: 'chatcmpl-manager-summary',
+                id: 'chatcmpl-agent-summary',
                 model: 'qwen3.5-plus',
                 finish_reason: 'stop',
                 usage: {
@@ -329,7 +329,7 @@ async function createHarness({
                 model: 'qwen3.5-plus'
               },
               response: {
-                id: 'chatcmpl-manager-operate',
+                id: 'chatcmpl-agent-operate',
                 model: 'qwen3.5-plus',
                 finish_reason: 'stop',
                 usage: {
@@ -357,7 +357,7 @@ async function createHarness({
               model: 'codingplan'
             },
             response: {
-              id: 'chatcmpl-manager',
+              id: 'chatcmpl-agent',
               model: 'codingplan',
               finish_reason: 'stop',
               usage: {
@@ -462,10 +462,10 @@ test('handleChannelMessage creates a manager session and replies through Feishu'
   assert.equal(snapshot.plan_steps.length, 2)
   assert.equal(snapshot.session.status, 'completed')
   assert.ok(snapshot.timeline.some((event) => event.kind === 'channel_message_received'))
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_plan_generated'))
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_step_executed'))
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_loop_completed'))
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_safe_loop_completed'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_plan_generated'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_step_executed'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_loop_completed'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_safe_loop_completed'))
   assert.equal(replies[0].messageId, 'om_123')
   assert.equal(replies[0].emojiType, 'SMILE')
   assert.equal(
@@ -761,13 +761,13 @@ test('runFeishuMaintenanceOnce compacts due Feishu context in the background loo
 })
 
 test('handleChannelMessage surfaces approval pause when repair enters the loop', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-repair-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-repair-'))
   const storageRoot = join(root, 'storage')
   const replies = []
   const runtime = createAgentRuntime({
     storageRoot,
     workspaceRoot: join(root, 'workspace'),
-    managerProfile: createAgentProfile({
+    agentProfile: createAgentProfile({
       env: {}
     }),
     feishuGateway: {
@@ -801,7 +801,7 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
             model: 'codingplan'
           },
           response: {
-            id: 'chatcmpl-manager-repair',
+            id: 'chatcmpl-agent-repair',
             model: 'codingplan',
             finish_reason: 'stop',
             usage: {
@@ -853,7 +853,7 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
   const hooks = await hookBus.listEvents({
     sessionId: result.session_id
   })
-  assert.ok(hooks.some((event) => event.name === 'manager.approval.waiting'))
+  assert.ok(hooks.some((event) => event.name === 'agent.approval.waiting'))
 })
 
 test('handleChannelMessage keeps pending approval state when a follow-up arrives during waiting_approval', async () => {
@@ -1333,7 +1333,7 @@ test('startFeishuLoop aborts the active command immediately when /stopnow arrive
   let runLoopEntered = false
 
   const { runtime, feishuGateway, sessionStore } = await createHarness({
-    managerExecutor: {
+    agentExecutor: {
       async continueApprovedManagerStep() {
         throw new Error('continueApprovedManagerStep should not be called in this test')
       },
@@ -1486,7 +1486,7 @@ test('handleChannelMessage requests more time at the checkpoint and defaults to 
   assert.ok(
     snapshot.timeline.some(
       (event) =>
-        event.kind === 'manager_timeout_extension_resolved'
+        event.kind === 'agent_timeout_extension_resolved'
         && event.payload.decision === 'default_approved'
     )
   )
@@ -1552,7 +1552,7 @@ test('handleChannelMessage stops the turn at the final timeout after the extra t
 })
 
 test('handleChannelMessage degrades gracefully when planner fails', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-fail-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-fail-'))
   const storageRoot = join(root, 'storage')
   const replies = []
   const runtime = createAgentRuntime({
@@ -1589,7 +1589,7 @@ test('handleChannelMessage degrades gracefully when planner fails', async () => 
 
   assert.match(result.ack_text, /规划失败/)
   assert.equal(snapshot.plan_steps.length, 0)
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_plan_failed'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_plan_failed'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'session_summary_updated'))
   assert.equal(replies[0].emojiType, 'SMILE')
   assert.ok(replies.filter((entry) => entry.emojiType).length >= 2)
@@ -1597,7 +1597,7 @@ test('handleChannelMessage degrades gracefully when planner fails', async () => 
 })
 
 test('handleChannelMessage sends a progress update when planning crosses the delay threshold', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-progress-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-progress-'))
   const storageRoot = join(root, 'storage')
   const replies = []
   const runtime = createAgentRuntime({
@@ -1628,7 +1628,7 @@ test('handleChannelMessage sends a progress update when planning crosses the del
             model: 'codingplan'
           },
           response: {
-            id: 'chatcmpl-manager-progress',
+            id: 'chatcmpl-agent-progress',
             model: 'codingplan',
             finish_reason: 'stop',
             usage: {
@@ -1673,7 +1673,7 @@ test('handleChannelMessage sends a progress update when planning crosses the del
 })
 
 test('handleChannelMessage records a gateway immediate reaction without sending it twice', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-preacked-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-preacked-'))
   const storageRoot = join(root, 'storage')
   const replies = []
   const runtime = createAgentRuntime({
@@ -1742,7 +1742,7 @@ test('handleChannelMessage short-circuits lightweight ping messages and still re
   assert.ok(replies.filter((entry) => entry.emojiType).length >= 2)
   assert.ok(replies.filter((entry) => entry.emojiType && entry.emojiType !== 'SMILE').length >= 1)
   assert.ok(replies.some((entry) => entry.text === '在，有事直接说。'))
-  assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_ping_detected'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_ping_detected'))
   assert.ok(
     snapshot.timeline.some(
       (event) => event.kind === 'assistant_message_added' && event.payload.stage === 'final_reply'
