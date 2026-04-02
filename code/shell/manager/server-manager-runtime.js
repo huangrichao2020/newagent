@@ -581,15 +581,35 @@ function buildFeishuProgressText({
   totalRuns = 0
 }) {
   const lines = []
+  const isThinking = operatorProfile.response_mode === 'thinking'
 
   if (stage === 'planning') {
-    lines.push('正在理解你的需求并整理计划。')
+    if (isThinking) {
+      lines.push('🤔 思考中：正在理解你的需求，整理计划...')
+    } else {
+      lines.push('正在理解你的需求并整理计划。')
+    }
   } else if (stage === 'planned' && planning?.plan) {
-    lines.push(`已拆成 ${planning.plan.steps.length} 步，开始推进。`)
-    lines.push(...summarizePlanStepsForReply(planning.plan.steps).slice(0, 4))
+    if (isThinking) {
+      lines.push(`📋 计划拆解（共 ${planning.plan.steps.length} 步）：`)
+      planning.plan.steps.slice(0, 4).forEach((step, i) => {
+        lines.push(`  ${i + 1}. ${step.title}`)
+      })
+    } else {
+      lines.push(`已拆成 ${planning.plan.steps.length} 步，开始推进。`)
+      lines.push(...summarizePlanStepsForReply(planning.plan.steps).slice(0, 4))
+    }
   } else if (stage === 'executing' && latestRun) {
-    lines.push(`正在推进第 ${totalRuns} 步。`)
-    lines.push(compactMultilineText(latestRun.summary ?? latestRun.report_text ?? ''))
+    if (isThinking) {
+      lines.push(`🔧 执行第 ${totalRuns} 步：`)
+      lines.push(`  工具：${latestRun.tool_name ?? '未知'}`)
+      if (latestRun.summary) {
+        lines.push(`  进展：${compactMultilineText(latestRun.summary)}`)
+      }
+    } else {
+      lines.push(`正在推进第 ${totalRuns} 步。`)
+      lines.push(compactMultilineText(latestRun.summary ?? latestRun.report_text ?? ''))
+    }
   }
 
   return lines
@@ -609,12 +629,33 @@ function buildFeishuFinalReplyText({
   }
 
   const lines = []
+  const isThinking = operatorProfile.response_mode === 'thinking'
 
-  if (planning?.plan?.operator_reply) {
-    lines.push(compactMultilineText(planning.plan.operator_reply))
+  if (isThinking && planning?.plan?.steps?.length) {
+    lines.push('📋 思考过程：')
+    lines.push(`  计划拆解：${planning.plan.steps.length} 步`)
+    planning.plan.steps.slice(0, 5).forEach((step, i) => {
+      lines.push(`    ${i + 1}. ${step.title}${step.kind ? ` (${step.kind})` : ''}`)
+    })
+    lines.push('')
   }
 
-  if (execution?.report_text) {
+  if (planning?.plan?.operator_reply) {
+    if (isThinking) {
+      lines.push('💡 结论：')
+      lines.push(compactMultilineText(planning.plan.operator_reply))
+    } else {
+      lines.push(compactMultilineText(planning.plan.operator_reply))
+    }
+  }
+
+  if (execution?.runs?.length && isThinking) {
+    lines.push('')
+    lines.push('🔧 执行过程：')
+    execution.runs.forEach((run, i) => {
+      lines.push(`  ${i + 1}. ${run.tool_name ?? '步骤'}: ${compactMultilineText(run.summary ?? run.report_text ?? '已完成')}`)
+    })
+  } else if (execution?.report_text) {
     lines.push(compactMultilineText(execution.report_text))
   }
 
@@ -4460,8 +4501,8 @@ export function createServerManagerRuntime({
         response_mode: parsed.command
       })
       const ackText = parsed.argument
-        ? `已切到 ${parsed.command === 'fast' ? '快回' : '持续反馈'}模式，继续处理你刚补的请求。`
-        : `已切到 ${parsed.command === 'fast' ? '快回' : '持续反馈'}模式。`
+        ? `已切到 ${parsed.command === 'fast' ? '快回' : '思考'}模式，继续处理你刚补的请求。思考模式下我会展示推理过程和中间步骤。`
+        : `已切到 ${parsed.command === 'fast' ? '快回' : '思考'}模式。思考模式下我会展示推理过程和中间步骤。`
 
       await deliverFeishuReply({
         message,
