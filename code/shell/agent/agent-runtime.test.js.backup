@@ -439,6 +439,55 @@ test('requestCoworkerHelp and resolveCoworkerRequest persist a Mac-local Codex e
   assert.ok(hooks.some((event) => event.name === 'coworker.request.resolved'))
 })
 
+      message_id: 'om_reaction_lifecycle_1',
+      chat_id: 'oc_reaction_lifecycle',
+      sender_open_id: 'ou_reaction_lifecycle',
+      text: '看一下 deploy-hub 当前状态'
+    }
+  })
+
+  const reactions = replies
+    .filter((entry) => entry.method === 'addMessageReaction')
+    .map((entry) => entry.emojiType)
+
+  assert.equal(reactions[0], 'SMILE')
+  assert.ok(reactions.length >= 3)
+  assert.ok(new Set(reactions).size >= 2)
+})
+
+test('handleChannelMessage reuses one unified Feishu session and injects prior transcript into planning', async () => {
+  const { runtime, sessionStore, plannerCalls } = await createHarness()
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_unified_1',
+      chat_id: 'oc_unified',
+      sender_open_id: 'ou_unified',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_unified_2',
+      chat_id: 'oc_unified',
+      sender_open_id: 'ou_unified',
+      text: '继续刚才那个问题，别重新开新会话'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(second.session_id)
+
+  assert.equal(second.session_id, first.session_id)
+  assert.match(second.ack_text, /继续沿用总管会话/)
+  assert.equal(snapshot.task.user_request, '继续刚才那个问题，别重新开新会话')
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'session_turn_started'))
+  assert.equal(plannerCalls.length, 2)
+  assert.match(plannerCalls[1].prompt, /RECENT TRANSCRIPT:/)
+  assert.match(plannerCalls[1].prompt, /先看看 deploy-hub 最近有没有异常/)
+})
+
 test('handleChannelMessage records positive confirmation signals as reusable memory', async () => {
   const { runtime, memoryStore } = await createHarness()
 
@@ -577,6 +626,57 @@ test('handleChannelMessage can use external review as a second judge before auto
   assert.match(evaluationCalls[0].prompt, /CANDIDATE PLAN:/)
 })
 
+test('handleChannelMessage compacts Feishu context after the five-hour interval and stores long-term memory', async () => {
+  let currentTime = Date.now()
+  const { runtime, sessionStore, memoryStore, summaryCalls, plannerCalls, hookBus } = await createHarness({
+    nowFn: () => currentTime
+  })
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_compact_1',
+      chat_id: 'oc_compact',
+      sender_open_id: 'ou_compact',
+      text: '先排查一下 deploy-hub 和 uwillberich'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  currentTime += 6 * 60 * 60 * 1000
+
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_compact_2',
+      chat_id: 'oc_compact',
+      sender_open_id: 'ou_compact',
+      text: '五小时过去了，继续刚才那个排查'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(second.session_id)
+  const compactedEntries = await memoryStore.searchMemoryEntries({
+    sessionId: second.session_id,
+    scope: 'session',
+    tag: 'context_compaction'
+  })
+  const hooks = await hookBus.listEvents({
+    sessionId: second.session_id,
+    name: 'manager.context.compacted'
+  })
+
+  assert.equal(summaryCalls.length, 1)
+  assert.equal(compactedEntries.length, 1)
+  assert.match(compactedEntries[0].content, /摘要：累计来看/)
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'conversation_compacted'))
+  assert.equal(hooks.length, 1)
+  assert.match(summaryCalls[0].prompt, /NEW TRANSCRIPT TO MERGE:/)
+  assert.match(summaryCalls[0].prompt, /先排查一下 deploy-hub 和 uwillberich/)
+  assert.match(plannerCalls[1].prompt, /LONG-TERM MEMORY:/)
+  assert.match(plannerCalls[1].prompt, /累计来看/)
+})
+
 test('runFeishuMaintenanceOnce compacts due Feishu context in the background loop', async () => {
   let currentTime = Date.now()
   const { runtime, memoryStore, summaryCalls } = await createHarness({
@@ -606,6 +706,225 @@ test('runFeishuMaintenanceOnce compacts due Feishu context in the background loo
   assert.equal(maintenance.status, 'compacted')
   assert.equal(summaryCalls.length, 1)
   assert.equal(compactedEntries.length, 1)
+})
+
+test('handleChannelMessage surfaces approval pause when repair enters the loop', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-repair-'))
+  const storageRoot = join(root, 'storage')
+  const replies = []
+  const runtime = createAgentRuntime({
+    storageRoot,
+    workspaceRoot: join(root, 'workspace'),
+    agentProfile: createAgentProfile({
+      env: {}
+    }),
+    feishuGateway: {
+      async addMessageReaction(payload) {
+        replies.push(payload)
+      },
+      async sendTextMessage(payload) {
+        replies.push(payload)
+      },
+      async replyTextMessage(payload) {
+        replies.push(payload)
+      }
+    },
+    fetchFn: async (url) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return `health ok ${url}`
+      }
+    }),
+    bailianProvider: {
+      async invokeByIntent() {
+        return {
+          route: {
+            provider: 'bailian',
+            model: 'codingplan'
+          },
+          request: {
+            base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+            model: 'codingplan'
+          },
+          response: {
+            id: 'chatcmpl-agent-repair',
+            model: 'codingplan',
+            finish_reason: 'stop',
+            usage: {
+              total_tokens: 64
+            },
+            content: JSON.stringify({
+              summary: '先修复 uwillberich 发布链，再回报处理状态。',
+              project_keys: ['uwillberich'],
+              operator_reply: '先修复 uwillberich，再给你回处理状态。',
+              steps: [
+                {
+                  title: '修复 uwillberich 发布链',
+                  kind: 'repair',
+                  notes: '需要改动代码'
+                },
+                {
+                  title: '汇报修复结果',
+                  kind: 'report',
+                  depends_on: [1]
+                }
+              ]
+            })
+          }
+        }
+      }
+    }
+  })
+  const sessionStore = createSessionStore({ storageRoot })
+
+  await runtime.bootstrapServerBaseline()
+
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_repair',
+      text: '修一下股票项目发布链'
+    }
+  })
+  const snapshot = await sessionStore.loadSession(result.session_id)
+
+  assert.equal(result.execution.status, 'waiting_approval')
+  assert.match(result.ack_text, /等待审批/)
+  assert.equal(snapshot.session.status, 'waiting_approval')
+  assert.equal(snapshot.approvals.length, 1)
+  assert.equal(snapshot.approvals[0].tool_name, 'codex_repair_workspace')
+  assert.equal(replies[0].emojiType, 'SMILE')
+  assert.equal(replies.length >= 2, true)
+  const hookBus = createHookBus({ storageRoot })
+  const hooks = await hookBus.listEvents({
+    sessionId: result.session_id
+  })
+  assert.ok(hooks.some((event) => event.name === 'agent.approval.waiting'))
+})
+
+test('handleChannelMessage keeps pending approval state when a follow-up arrives during waiting_approval', async () => {
+  const { runtime, storageRoot } = await createHarness({
+    plannerResponse: {
+      summary: '先修复 uwillberich 发布链，再回报处理状态。',
+      project_keys: ['uwillberich'],
+      operator_reply: '先修复 uwillberich，再给你回处理状态。',
+      steps: [
+        {
+          title: '修复 uwillberich 发布链',
+          kind: 'repair',
+          notes: '需要改动代码'
+        },
+        {
+          title: '汇报修复结果',
+          kind: 'report',
+          dependsOn: [0]
+        }
+      ]
+    }
+  })
+  const sessionStore = createSessionStore({ storageRoot })
+
+  await runtime.bootstrapServerBaseline()
+
+  const firstResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_repair_keep_1',
+      chat_id: 'oc_repair_keep',
+      sender_open_id: 'ou_repair_keep',
+      text: '修一下股票项目发布链'
+    }
+  })
+  const firstSnapshot = await sessionStore.loadSession(firstResult.session_id)
+  const firstApprovalId = firstSnapshot.approvals[0].id
+  const firstTaskId = firstSnapshot.task.id
+
+  const secondResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_repair_keep_2',
+      chat_id: 'oc_repair_keep',
+      sender_open_id: 'ou_repair_keep',
+      text: '先补充一下影响范围'
+    }
+  })
+  const secondSnapshot = await sessionStore.loadSession(secondResult.session_id)
+  const followUpMessages = secondSnapshot.timeline.filter((event) =>
+    event.kind === 'user_message_added'
+    && event.payload?.content === '先补充一下影响范围'
+  )
+
+  assert.equal(secondResult.session_id, firstResult.session_id)
+  assert.match(secondResult.ack_text, /不会清空当前计划和审批/)
+  assert.equal(secondSnapshot.session.status, 'waiting_approval')
+  assert.equal(secondSnapshot.task.status, 'waiting_approval')
+  assert.equal(secondSnapshot.task.id, firstTaskId)
+  assert.equal(secondSnapshot.approvals.length, 1)
+  assert.equal(secondSnapshot.approvals[0].id, firstApprovalId)
+  assert.equal(secondSnapshot.approvals[0].status, 'pending')
+  assert.equal(secondSnapshot.plan_steps[0].status, 'waiting_approval')
+  assert.equal(followUpMessages.length, 1)
+})
+
+test('handleChannelMessage auto-reports and executes a pending deploy step without waiting for approval', async () => {
+  const { runtime, storageRoot, projectRegistry, workspaceRoot } = await createHarness({
+    plannerResponse: {
+      summary: '先发布 deploy-hub，再汇报处理状态。',
+      project_keys: ['deploy-hub'],
+      operator_reply: '先发 deploy-hub，再给你回结果。',
+      steps: [
+        {
+          title: '发布 deploy-hub 到线上',
+          kind: 'deploy'
+        }
+      ]
+    },
+    operateResponse: ({ workspaceRoot }) => ({
+      cwd: join(workspaceRoot, 'deploy-hub'),
+      command: "printf 'deploy ok\\n'",
+      summary: '准备在 deploy-hub 执行发布命令',
+      timeout_ms: 1000
+    })
+  })
+  const sessionStore = createSessionStore({ storageRoot })
+  const deployHubRoot = join(workspaceRoot, 'deploy-hub')
+
+  await runtime.bootstrapServerBaseline()
+  await mkdir(deployHubRoot, { recursive: true })
+  await projectRegistry.registerProject({
+    project_key: 'deploy-hub',
+    name: 'deploy-hub',
+    tier: 'minor',
+    role: 'Static site publish infrastructure',
+    source_root: deployHubRoot,
+    runtime_root: join(workspaceRoot, 'deploy-runtime'),
+    publish_root: join(workspaceRoot, 'published'),
+    public_base_path: '/apps/',
+    pm2_name: 'deploy-hub',
+    service_endpoint: 'http://127.0.0.1:3900/_deploy/ticket',
+    status: 'active'
+  })
+
+  const firstResult = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_deploy_1',
+      chat_id: 'oc_deploy',
+      sender_open_id: 'ou_deploy',
+      text: '发布 deploy-hub'
+    }
+  })
+
+  const snapshot = await sessionStore.loadSession(firstResult.session_id)
+
+  assert.equal(firstResult.execution.status, 'completed')
+  assert.match(firstResult.ack_text, /高风险执行/)
+  assert.match(firstResult.ack_text, /\/stop/)
+  assert.match(firstResult.ack_text, /deploy ok/)
+  assert.equal(snapshot.session.status, 'completed')
+  assert.equal(snapshot.approvals[0].status, 'approved')
 })
 
 test('startFeishuLoop bootstraps projects and registers the Feishu onMessage handler', async () => {
@@ -750,6 +1069,102 @@ test('startFeishuLoop updates the Feishu reply mode through /fast and reports it
   assert.match(statusResult.ack_text, /当前模式/)
 })
 
+test('startFeishuLoop enables thinking mode, streams progress updates, and sends a final interactive card', async () => {
+  const { runtime, feishuGateway, replies } = await createHarness({
+    plannerDelayMs: 20,
+    progressReplyDelayMs: 0
+  })
+
+  await runtime.startFeishuLoop()
+
+  await feishuGateway.onMessage({
+    message_id: 'om_thinking_mode',
+    chat_id: 'oc_thinking_mode',
+    sender_open_id: 'ou_thinking_mode',
+    text: '/thinking'
+  })
+
+  await feishuGateway.onMessage({
+    message_id: 'om_thinking_request',
+    chat_id: 'oc_thinking_mode',
+    sender_open_id: 'ou_thinking_mode',
+    text: '帮我详细排查 deploy-hub 和 uwillberich 当前状态'
+  })
+
+  assert.equal(
+    replies.some((entry) => entry.method === 'replyTextMessage'),
+    true
+  )
+  assert.equal(
+    replies.some((entry) => entry.method === 'updateTextMessage'),
+    false
+  )
+
+  const finalCard = [...replies]
+    .reverse()
+    .find((entry) => entry.method === 'replyInteractiveCard' || entry.method === 'sendInteractiveCard')
+
+  assert.ok(finalCard)
+  assert.match(finalCard.card.header.title.content, /已完成|处理中|等待审批/)
+  assert.match(finalCard.card.elements[0].content, /本轮处理|当前结论|下一步/)
+})
+
+test('runFeishuBackgroundPrecomputeOnce prepares ready replies for fuzzy likely follow-ups', async () => {
+  const { runtime, backgroundCalls, conversationCalls } = await createHarness({
+    enableExternalReview: true
+  })
+
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_1',
+      chat_id: 'oc_bg',
+      sender_open_id: 'ou_bg',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  const prepared = await runtime.runFeishuBackgroundPrecomputeOnce()
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_2',
+      chat_id: 'oc_bg',
+      sender_open_id: 'ou_bg',
+      text: '这次算大改吗？'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  assert.equal(prepared.status, 'prepared')
+  assert.equal(backgroundCalls.length >= 1, true)
+  assert.equal(conversationCalls.length, 0)
+  assert.equal(first.session_id, second.session_id)
+  assert.match(second.direct_reply.text, /超时机制、基础设施 registry 和飞书回复链路/)
+})
+
+test('handleChannelMessage eagerly schedules background precompute after a completed Feishu turn', async () => {
+  const { runtime, backgroundCalls } = await createHarness({
+    enableExternalReview: true
+  })
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_eager_1',
+      chat_id: 'oc_bg_eager',
+      sender_open_id: 'ou_bg_eager',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 220))
+
+  assert.equal(backgroundCalls.length >= 1, true)
+})
+
 test('startFeishuLoop accepts /appendmsg and queues appended suggestions behind the active turn', async () => {
   const { runtime, feishuGateway, plannerCalls, sessionStore } = await createHarness({
     feishuAppendMergeWindowMs: 5,
@@ -860,6 +1275,90 @@ test('startFeishuLoop stops the active turn at the next safe point when /stop ar
   }
 })
 
+test('startFeishuLoop aborts the active command immediately when /stopnow arrives', async () => {
+  let observedAbortSignal = null
+  let abortEventCount = 0
+  let runLoopEntered = false
+
+  const { runtime, feishuGateway, sessionStore } = await createHarness({
+    agentExecutor: {
+      async continueApprovedManagerStep() {
+        throw new Error('continueApprovedManagerStep should not be called in this test')
+      },
+      async runManagerLoop({ sessionId, abortSignal }) {
+        runLoopEntered = true
+        observedAbortSignal = abortSignal
+
+        await new Promise((resolve) => {
+          if (!abortSignal) {
+            setTimeout(resolve, 1000)
+            return
+          }
+
+          if (abortSignal.aborted) {
+            abortEventCount += 1
+            resolve()
+            return
+          }
+
+          abortSignal.addEventListener('abort', () => {
+            abortEventCount += 1
+            resolve()
+          }, { once: true })
+        })
+
+        const snapshot = await sessionStore.loadSession(sessionId)
+        return {
+          status: 'stopped',
+          runs: [],
+          report_text: null,
+          session: snapshot.session,
+          task: snapshot.task,
+          plan_steps: snapshot.plan_steps,
+          approvals: snapshot.approvals
+        }
+      }
+    },
+    plannerDelayMs: 0,
+    progressReplyDelayMs: 0,
+    feishuAppendMergeWindowMs: 0
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_stopnow_active_1',
+    chat_id: 'oc_stopnow_active',
+    sender_open_id: 'ou_stopnow_active',
+    text: '先详细排查 deploy-hub 当前状态'
+  })
+
+  for (let index = 0; index < 20 && !runLoopEntered; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  const stopNowResult = await feishuGateway.onMessage({
+    message_id: 'om_stopnow_active_2',
+    chat_id: 'oc_stopnow_active',
+    sender_open_id: 'ou_stopnow_active',
+    text: '/stopnow'
+  })
+
+  const firstResult = await firstResultPromise
+
+  assert.equal(runLoopEntered, true)
+  assert.ok(observedAbortSignal)
+  assert.equal(observedAbortSignal.aborted, true)
+  assert.equal(abortEventCount, 1)
+  assert.match(stopNowResult.ack_text, /stopnow|立即终止/)
+  assert.equal(firstResult.stopped, true)
+
+  if (firstResult.session_id) {
+    const snapshot = await sessionStore.loadSession(firstResult.session_id)
+    assert.equal(snapshot.session.status, 'aborted')
+  }
+})
+
 test('handleChannelMessage sends a 30-second style progress feedback before planning finishes', async () => {
   const { runtime, sessionStore } = await createHarness({
     plannerDelayMs: 30,
@@ -939,6 +1438,65 @@ test('handleChannelMessage requests more time at the checkpoint and defaults to 
         && event.payload.decision === 'default_approved'
     )
   )
+})
+
+test('handleChannelMessage stops the turn at the final timeout after the extra time budget is exhausted', async () => {
+  const { runtime, sessionStore } = await createHarness({
+    fetchDelayMs: 25,
+    progressReplyDelayMs: 0,
+    longRunningFeedbackMs: 5,
+    longRunningCheckpointMs: 10,
+    longRunningExtensionApprovalMs: 1,
+    longRunningFinalStopMs: 20,
+    plannerResponse: {
+      summary: '先探活 deploy-hub。',
+      project_keys: ['deploy-hub'],
+      operator_reply: '先探活 deploy-hub，再继续判断后续动作。',
+      steps: [
+        {
+          title: '探活 deploy-hub 服务状态',
+          kind: 'inspect',
+          notes: '故意拉长到超过最终时限'
+        },
+        {
+          title: '检查 deploy-hub 最近的发布票据和日志',
+          kind: 'inspect',
+          notes: '确认后续还有未完成步骤'
+        }
+      ]
+    }
+  })
+
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_timeout_final',
+      chat_id: 'oc_timeout_final',
+      sender_open_id: 'ou_timeout_final',
+      text: '帮我持续排查 deploy-hub'
+    }
+  })
+
+  assert.equal(result.stopped, true)
+
+  if (result.session_id) {
+    const snapshot = await sessionStore.loadSession(result.session_id)
+    assert.equal(snapshot.session.status, 'aborted')
+    assert.ok(
+      snapshot.timeline.some(
+        (event) =>
+          event.kind === 'assistant_message_added'
+          && event.payload.stage === 'timeout_final_stop'
+      )
+    )
+    assert.ok(
+      snapshot.timeline.some(
+        (event) =>
+          event.kind === 'manager_run_stopped'
+          && event.payload.stage === 'timeout_final_stop'
+      )
+    )
+  }
 })
 
 test('handleChannelMessage degrades gracefully when planner fails', async () => {
@@ -1106,4 +1664,80 @@ test('handleChannelMessage records a gateway immediate reaction without sending 
     snapshot.timeline.find((event) => event.kind === 'assistant_reaction_added')?.payload.source,
     'feishu_gateway'
   )
+})
+
+test('handleChannelMessage short-circuits lightweight ping messages and still replies on Feishu', async () => {
+  const { runtime, sessionStore, replies, plannerCalls } = await createHarness()
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    autoReply: false,
+    message: {
+      message_id: 'om_ping_short',
+      chat_id: 'oc_ping_short',
+      sender_open_id: 'ou_ping_short',
+      text: '在不'
+    }
+  })
+  const snapshot = await sessionStore.loadSession(result.session_id)
+
+  assert.equal(result.ack_text, '在，有事直接说。')
+  assert.equal(plannerCalls.length, 0)
+  assert.equal(result.planning, null)
+  assert.equal(result.execution, null)
+  assert.equal(snapshot.session.status, 'completed')
+  assert.equal(snapshot.task.status, 'completed')
+  assert.equal(replies[0].emojiType, 'SMILE')
+  assert.ok(replies.filter((entry) => entry.emojiType).length >= 2)
+  assert.ok(replies.filter((entry) => entry.emojiType && entry.emojiType !== 'SMILE').length >= 1)
+  assert.ok(replies.some((entry) => entry.text === '在，有事直接说。'))
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'agent_ping_detected'))
+  assert.ok(
+    snapshot.timeline.some(
+      (event) => event.kind === 'assistant_message_added' && event.payload.stage === 'final_reply'
+    )
+  )
+})
+
+test('handleChannelMessage learns operator feedback rules and injects them into the planner prompt', async () => {
+  const { runtime, sessionStore, memoryStore, plannerCalls, hookBus } = await createHarness()
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_feedback_rule',
+      chat_id: 'oc_feedback_rule',
+      sender_open_id: 'ou_feedback_rule',
+      text:
+        '飞书先快速响应，最好 3 秒内先给我一个表情；如果是难题就先说你在思考，过程输出也给我。'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(result.session_id)
+  const learnedRules = await memoryStore.searchMemoryEntries({
+    sessionId: result.session_id,
+    scope: 'project',
+    tag: 'feedback_rule'
+  })
+
+  assert.equal(learnedRules.length >= 3, true)
+  assert.equal(
+    learnedRules.some((entry) =>
+      entry.content.includes('飞书来消息后先快速确认收到')
+    ),
+    true
+  )
+  assert.equal(
+    learnedRules.some((entry) =>
+      entry.content.includes('复杂问题先说明正在理解或排查')
+    ),
+    true
+  )
+  assert.match(plannerCalls[0].prompt, /OPERATOR RULES:/)
+  assert.match(plannerCalls[0].prompt, /优先使用表情 reaction/)
+  assert.ok(snapshot.timeline.some((event) => event.kind === 'feedback_memory_learned'))
+  const hooks = await hookBus.listEvents({
+    sessionId: result.session_id,
+    name: 'manager.feedback.learned'
+  })
+  assert.equal(hooks.length, 1)
+  assert.equal(hooks[0].payload.written_count >= 3, true)
 })
