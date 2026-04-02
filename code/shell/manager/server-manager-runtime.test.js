@@ -13,6 +13,8 @@ import { createRemoteServerManagerProfile } from './remote-server-manager-profil
 async function createHarness({
   nowFn = Date.now,
   enableExternalReview = false,
+  feishuAppendMergeWindowMs = undefined,
+  plannerDelayMs = 0,
   evaluationResponse = {
     verdict: 'pass',
     summary: '外部复核通过。',
@@ -72,6 +74,7 @@ async function createHarness({
       workspaceRoot,
       managerProfile,
       nowFn,
+      feishuAppendMergeWindowMs,
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
@@ -84,6 +87,10 @@ async function createHarness({
       bailianProvider: {
         async invokeByIntent(input) {
           providerCalls.push(input)
+
+          if (plannerDelayMs > 0 && input.intent !== 'evaluate' && input.intent !== 'summarize') {
+            await new Promise((resolve) => setTimeout(resolve, plannerDelayMs))
+          }
 
           if (input.intent === 'evaluate') {
             evaluationCalls.push(input)
@@ -533,6 +540,81 @@ test('startFeishuLoop bootstraps projects and registers the Feishu onMessage han
   assert.equal(feishuGateway.startOptions.immediateReactionEmojiType, 'SMILE')
   assert.equal(feishuGateway.startOptions.immediateReplyText, '已读喵，我在看啦。')
   assert.equal(projects.length, 6)
+})
+
+test('startFeishuLoop batches consecutive Feishu messages into one turn after a short quiet window', async () => {
+  const { runtime, feishuGateway, plannerCalls, sessionStore } = await createHarness({
+    feishuAppendMergeWindowMs: 10
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_batch_1',
+    chat_id: 'oc_batch',
+    sender_open_id: 'ou_batch',
+    text: '先看 deploy-hub'
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 1))
+
+  const secondResultPromise = feishuGateway.onMessage({
+    message_id: 'om_batch_2',
+    chat_id: 'oc_batch',
+    sender_open_id: 'ou_batch',
+    text: '再顺手看 uwillberich'
+  })
+
+  const firstResult = await firstResultPromise
+  const secondResult = await secondResultPromise
+  const snapshot = await sessionStore.loadSession(firstResult.session_id)
+  const receivedEvents = snapshot.timeline.filter((event) => event.kind === 'channel_message_received')
+
+  assert.equal(firstResult.session_id, secondResult.session_id)
+  assert.equal(plannerCalls.length, 1)
+  assert.equal(snapshot.task.user_request, '先看 deploy-hub\n再顺手看 uwillberich')
+  assert.equal(receivedEvents.length, 2)
+  assert.equal(receivedEvents[0].payload.message_id, 'om_batch_1')
+  assert.equal(receivedEvents[1].payload.message_id, 'om_batch_2')
+})
+
+test('startFeishuLoop queues appended Feishu messages behind an active turn and handles them next', async () => {
+  const { runtime, feishuGateway, plannerCalls, sessionStore } = await createHarness({
+    feishuAppendMergeWindowMs: 5,
+    plannerDelayMs: 30
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_queue_1',
+    chat_id: 'oc_queue',
+    sender_open_id: 'ou_queue',
+    text: '先看 deploy-hub'
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 12))
+
+  const secondResultPromise = feishuGateway.onMessage({
+    message_id: 'om_queue_2',
+    chat_id: 'oc_queue',
+    sender_open_id: 'ou_queue',
+    text: '再看 worker 状态'
+  })
+
+  const firstResult = await firstResultPromise
+  const secondResult = await secondResultPromise
+  const snapshot = await sessionStore.loadSession(secondResult.session_id)
+
+  assert.equal(firstResult.session_id, secondResult.session_id)
+  assert.equal(plannerCalls.length, 2)
+  assert.equal(snapshot.task.user_request, '再看 worker 状态')
+  assert.equal(
+    snapshot.timeline.filter((event) => event.kind === 'session_turn_started').length >= 1,
+    true
+  )
+  assert.match(plannerCalls[1].prompt, /RECENT TRANSCRIPT:/)
+  assert.match(plannerCalls[1].prompt, /先看 deploy-hub/)
 })
 
 test('handleChannelMessage degrades gracefully when planner fails', async () => {

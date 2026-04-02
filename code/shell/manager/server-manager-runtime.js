@@ -29,10 +29,27 @@ import { readJson, writeJsonAtomic } from '../../storage/json-files.js'
 const FEISHU_UNIFIED_CHANNEL_KEY = 'feishu-primary'
 const DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS = 5 * 60 * 60 * 1000
 const DEFAULT_MAINTENANCE_POLL_INTERVAL_MS = 5 * 60 * 1000
+const DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS = 800
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
 const CONFIRMATION_SIGNAL_PATTERN = /^(好|好的|好啊|收到|明白|没问题|可以|行|行的|就这样|就这样吧|按这个来|按这个做|继续|继续吧|yes|perfect|exactly|keepdoingthat)$/u
+
+function listOperatorMessages(message) {
+  if (Array.isArray(message?.batch_messages) && message.batch_messages.length > 0) {
+    return message.batch_messages
+  }
+
+  return message ? [message] : []
+}
+
+function buildSingleOperatorRequest(message) {
+  if (message?.text) {
+    return message.text
+  }
+
+  return JSON.stringify(message?.content ?? message?.raw_content ?? {})
+}
 
 function buildOperatorTitle(message) {
   const sender = message.sender_open_id ?? message.sender_user_id ?? 'operator'
@@ -40,11 +57,15 @@ function buildOperatorTitle(message) {
 }
 
 function buildOperatorRequest(message) {
-  if (message.text) {
-    return message.text
+  const requests = listOperatorMessages(message)
+    .map((item) => buildSingleOperatorRequest(item))
+    .filter((item) => String(item ?? '').length > 0)
+
+  if (requests.length > 0) {
+    return requests.join('\n')
   }
 
-  return JSON.stringify(message.content ?? message.raw_content ?? {})
+  return buildSingleOperatorRequest(message)
 }
 
 function buildImmediateFeishuAck() {
@@ -476,6 +497,7 @@ export function createServerManagerRuntime({
   managerProfile = createRemoteServerManagerProfile(),
   progressReplyDelayMs = 2000,
   contextCompactionIntervalMs = DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS,
+  feishuAppendMergeWindowMs = DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS,
   nowFn = Date.now,
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout
@@ -491,9 +513,151 @@ export function createServerManagerRuntime({
     executionProvider: bailianProvider,
     managerProfile
   })
+  const feishuInboundQueue = {
+    pending: [],
+    lastEnqueuedAtMs: null,
+    drainPromise: null
+  }
 
   function nowIso() {
     return new Date(nowFn()).toISOString()
+  }
+
+  function waitForMs(durationMs) {
+    if (durationMs == null || durationMs <= 0) {
+      return Promise.resolve()
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeoutFn(resolve, durationMs)
+      timer?.unref?.()
+    })
+  }
+
+  function buildFeishuMergeKey(message) {
+    return [
+      message?.chat_id ?? '',
+      message?.sender_open_id ?? message?.sender_user_id ?? ''
+    ].join(':')
+  }
+
+  function findLatestImmediateAck(messages = []) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const immediateAck = messages[index]?.immediate_ack
+
+      if (immediateAck) {
+        return immediateAck
+      }
+    }
+
+    return null
+  }
+
+  function buildMergedFeishuMessage(messages = []) {
+    const normalizedMessages = messages.filter(Boolean)
+    const lastMessage = normalizedMessages.at(-1) ?? {}
+
+    return {
+      ...lastMessage,
+      immediate_ack: findLatestImmediateAck(normalizedMessages),
+      batch_messages: normalizedMessages
+    }
+  }
+
+  async function waitForFeishuQuietWindow(queueState) {
+    if (feishuAppendMergeWindowMs == null || feishuAppendMergeWindowMs <= 0) {
+      return
+    }
+
+    while (queueState.pending.length > 0) {
+      const lastEnqueuedAtMs = queueState.lastEnqueuedAtMs
+
+      if (lastEnqueuedAtMs == null) {
+        return
+      }
+
+      const remainingMs = feishuAppendMergeWindowMs - (Date.now() - lastEnqueuedAtMs)
+
+      if (remainingMs <= 0) {
+        return
+      }
+
+      await waitForMs(remainingMs)
+    }
+  }
+
+  function takeNextFeishuBatch(queueState) {
+    if (queueState.pending.length === 0) {
+      return []
+    }
+
+    const nextMergeKey = buildFeishuMergeKey(queueState.pending[0].message)
+    let batchLength = 1
+
+    while (
+      batchLength < queueState.pending.length
+      && buildFeishuMergeKey(queueState.pending[batchLength].message) === nextMergeKey
+    ) {
+      batchLength += 1
+    }
+
+    return queueState.pending.splice(0, batchLength)
+  }
+
+  async function drainFeishuInboundQueue() {
+    while (feishuInboundQueue.pending.length > 0) {
+      await waitForFeishuQuietWindow(feishuInboundQueue)
+
+      const batchEntries = takeNextFeishuBatch(feishuInboundQueue)
+
+      if (batchEntries.length === 0) {
+        continue
+      }
+
+      const lastEntry = batchEntries.at(-1)
+
+      try {
+        const result = await handleChannelMessage({
+          channel: 'feishu',
+          message: buildMergedFeishuMessage(batchEntries.map((entry) => entry.message)),
+          autoReply: lastEntry.options.autoReply,
+          autoPlan: lastEntry.options.autoPlan,
+          autoExecuteSafeInspect: lastEntry.options.autoExecuteSafeInspect
+        })
+
+        for (const entry of batchEntries) {
+          entry.resolve(result)
+        }
+      } catch (error) {
+        for (const entry of batchEntries) {
+          entry.reject(error)
+        }
+      }
+    }
+  }
+
+  function ensureFeishuInboundQueueDrain() {
+    if (feishuInboundQueue.drainPromise) {
+      return feishuInboundQueue.drainPromise
+    }
+
+    feishuInboundQueue.drainPromise = Promise.resolve()
+      .then(() => drainFeishuInboundQueue())
+      .finally(() => {
+        feishuInboundQueue.drainPromise = null
+
+        if (feishuInboundQueue.pending.length > 0) {
+          ensureFeishuInboundQueueDrain()
+        }
+      })
+
+    return feishuInboundQueue.drainPromise
+  }
+
+  function enqueueFeishuMessage(entry) {
+    feishuInboundQueue.pending.push(entry)
+    feishuInboundQueue.lastEnqueuedAtMs = Date.now()
+    ensureFeishuInboundQueueDrain()
   }
 
   function getChannelStateFile(channelKey) {
@@ -1739,17 +1903,22 @@ export function createServerManagerRuntime({
           channel_state: null
         }
     const sessionId = activeTurn.snapshot.session.id
+    const channelMessages = listOperatorMessages(message)
 
-    await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'channel_message_received',
-      actor: `channel:${channel}`,
-      payload: {
-        channel,
-        message_id: message.message_id ?? null,
-        chat_id: message.chat_id ?? null,
-        sender_open_id: message.sender_open_id ?? null
-      }
-    })
+    for (const [index, channelMessage] of channelMessages.entries()) {
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'channel_message_received',
+        actor: `channel:${channel}`,
+        payload: {
+          channel,
+          message_id: channelMessage.message_id ?? null,
+          chat_id: channelMessage.chat_id ?? null,
+          sender_open_id: channelMessage.sender_open_id ?? null,
+          batch_index: index + 1,
+          batch_size: channelMessages.length
+        }
+      })
+    }
     await emitHook({
       name: 'channel.message.received',
       sessionId,
@@ -1758,7 +1927,8 @@ export function createServerManagerRuntime({
       payload: {
         message_id: message.message_id ?? null,
         chat_id: message.chat_id ?? null,
-        sender_open_id: message.sender_open_id ?? null
+        sender_open_id: message.sender_open_id ?? null,
+        batch_size: channelMessages.length
       }
     })
 
@@ -1996,12 +2166,17 @@ export function createServerManagerRuntime({
       immediateReactionEmojiType: autoReply ? buildImmediateFeishuReaction() : null,
       immediateReplyText: autoReply ? buildImmediateFeishuAck() : null,
       onMessage: async (message) => {
-        await handleChannelMessage({
-          channel: 'feishu',
-          message,
-          autoReply,
-          autoPlan,
-          autoExecuteSafeInspect
+        return new Promise((resolve, reject) => {
+          enqueueFeishuMessage({
+            message,
+            options: {
+              autoReply,
+              autoPlan,
+              autoExecuteSafeInspect
+            },
+            resolve,
+            reject
+          })
         })
       }
     })
