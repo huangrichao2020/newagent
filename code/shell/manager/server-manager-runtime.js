@@ -37,6 +37,8 @@ const DEFAULT_FEISHU_LONG_RUNNING_FEEDBACK_MS = 30 * 1000
 const DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS = 3 * 60 * 1000
 const DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS = 10 * 1000
 const DEFAULT_FEISHU_FINAL_TIMEOUT_MS = 6 * 60 * 1000
+const DEFAULT_BACKGROUND_PRECOMPUTE_INTERVAL_MS = 3 * 60 * 1000
+const DEFAULT_BACKGROUND_PRECOMPUTE_TRIGGER_DELAY_MS = 150
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
@@ -65,6 +67,14 @@ function listOperatorMessages(message) {
   return message ? [message] : []
 }
 
+function uniqueStringValues(values = []) {
+  return [...new Set(
+    values
+      .map((value) => (value == null ? null : String(value).trim()))
+      .filter(Boolean)
+  )]
+}
+
 function buildSingleOperatorRequest(message) {
   if (message?.text) {
     return message.text
@@ -88,6 +98,33 @@ function buildOperatorRequest(message) {
   }
 
   return buildSingleOperatorRequest(message)
+}
+
+function collectReferencedMessageIds(message) {
+  return uniqueStringValues(
+    listOperatorMessages(message).flatMap((item) => [
+      item?.parent_message_id,
+      item?.root_message_id,
+      ...(Array.isArray(item?.referenced_message_ids) ? item.referenced_message_ids : [])
+    ])
+  )
+}
+
+function buildFeishuUserMessageMeta(message) {
+  const messages = listOperatorMessages(message)
+  const lastMessage = messages.at(-1) ?? {}
+
+  return {
+    channel: 'feishu',
+    message_id: lastMessage.message_id ?? null,
+    message_ids: uniqueStringValues(messages.map((item) => item?.message_id)),
+    chat_id: lastMessage.chat_id ?? null,
+    sender_open_id: lastMessage.sender_open_id ?? lastMessage.sender_user_id ?? null,
+    referenced_message_ids: collectReferencedMessageIds(message),
+    parent_message_id: lastMessage.parent_message_id ?? null,
+    root_message_id: lastMessage.root_message_id ?? null,
+    batch_size: messages.length
+  }
 }
 
 function buildImmediateFeishuAck() {
@@ -145,6 +182,14 @@ function cleanText(value) {
     .trim()
 }
 
+function cleanMultilineText(value) {
+  return String(value ?? '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim()
+}
+
 function normalizeFeishuResponseMode(value) {
   const normalized = cleanText(value).toLowerCase()
 
@@ -189,6 +234,95 @@ function compactMultilineText(value) {
     .map((line) => cleanText(line))
     .filter(Boolean)
     .join('；')
+}
+
+function findTimelineMessageById(timeline = [], messageId, {
+  excludeTaskId = null
+} = {}) {
+  const normalizedMessageId = cleanText(messageId)
+
+  if (!normalizedMessageId) {
+    return null
+  }
+
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index]
+
+    if (!event || event.task_id === excludeTaskId) {
+      continue
+    }
+
+    if (!['assistant_message_added', 'assistant_message_updated', 'user_message_added'].includes(event.kind)) {
+      continue
+    }
+
+    const payload = event.payload ?? {}
+    const messageIds = uniqueStringValues([
+      payload.message_id,
+      ...(Array.isArray(payload.message_ids) ? payload.message_ids : [])
+    ])
+
+    if (!messageIds.includes(normalizedMessageId)) {
+      continue
+    }
+
+    const content = cleanMultilineText(payload.content)
+
+    if (!content) {
+      continue
+    }
+
+    return {
+      message_id: normalizedMessageId,
+      role: event.kind === 'user_message_added' ? 'operator' : 'assistant',
+      content,
+      stage: payload.stage ?? null,
+      at: event.at ?? null,
+      task_id: event.task_id ?? null
+    }
+  }
+
+  return null
+}
+
+function buildFeishuAttentionContext({
+  message,
+  snapshot
+}) {
+  const currentMessage = buildOperatorRequest(message)
+  const referencedMessageIds = collectReferencedMessageIds(message)
+  const referencedMessages = referencedMessageIds
+    .map((messageId) => findTimelineMessageById(snapshot.timeline, messageId, {
+      excludeTaskId: snapshot.task.id
+    }))
+    .filter(Boolean)
+  const primaryReference = referencedMessages.find((entry) => entry.role === 'assistant')
+    ?? referencedMessages[0]
+    ?? null
+
+  return {
+    current_message: currentMessage,
+    relation: primaryReference ? `reply_to_${primaryReference.role}` : 'new_message',
+    referenced_message_ids: referencedMessageIds,
+    referenced_messages: referencedMessages,
+    primary_reference: primaryReference
+  }
+}
+
+function buildAttentionStackLines(attentionContext) {
+  const lines = [
+    'highest_priority: 当前这条 operator 消息',
+    attentionContext.primary_reference
+      ? `secondary_priority: 正在回复的既有消息 [${attentionContext.primary_reference.role}] ${compactMultilineText(attentionContext.primary_reference.content)}`
+      : 'secondary_priority: 无显式引用消息，本轮按当前消息单独理解',
+    'lower_priority: 旧的 assistant 回复、最近转录、长期记忆都只是辅助，不要盖过当前消息'
+  ]
+
+  if (attentionContext.referenced_message_ids.length > 0) {
+    lines.push(`referenced_message_ids: ${attentionContext.referenced_message_ids.join('、')}`)
+  }
+
+  return lines
 }
 
 function summarizePlanStepsForReply(steps = []) {
@@ -292,8 +426,6 @@ function buildFeishuProgressText({
   totalRuns = 0
 }) {
   const lines = []
-  const modeLine = `当前模式：${buildFeishuResponseModeLabel(operatorProfile.response_mode)}`
-  lines.push(modeLine)
 
   if (stage === 'planning') {
     lines.push('正在理解你的需求并整理计划。')
@@ -306,9 +438,6 @@ function buildFeishuProgressText({
   } else if (stage === 'waiting_approval') {
     lines.push('当前已暂停，等待你的审批。')
   }
-
-  lines.push(`可继续补充：/appendmsg 内容`)
-  lines.push(`需要停止：/stop`)
 
   return lines
     .filter(Boolean)
@@ -397,10 +526,6 @@ function buildFeishuReplyCard({
     sections.push(`**已记住**\n- ${feedbackAck}`)
   }
 
-  if (operatorProfile.show_command_hints) {
-    sections.push(`**快捷指令**\n${buildFeishuCommandHintMarkdown()}`)
-  }
-
   return {
     config: {
       wide_screen_mode: true,
@@ -417,6 +542,32 @@ function buildFeishuReplyCard({
       {
         tag: 'markdown',
         content: sections.join('\n\n')
+      }
+    ]
+  }
+}
+
+function buildFeishuConversationCard({
+  title = '当前情况',
+  template = 'blue',
+  content
+}) {
+  return {
+    config: {
+      wide_screen_mode: true,
+      enable_forward: true
+    },
+    header: {
+      template,
+      title: {
+        tag: 'plain_text',
+        content: title
+      }
+    },
+    elements: [
+      {
+        tag: 'markdown',
+        content
       }
     ]
   }
@@ -497,6 +648,102 @@ function normalizeForSignalMatch(value) {
     .toLowerCase()
     .replace(/\s+/g, '')
     .replace(/[，。,.!！?？:：;；'"“”‘’、\-]/gu, '')
+}
+
+function compactPreparedReplyIntent(value) {
+  return normalizeForSignalMatch(value)
+    .replace(/(是不是|有没有|这次|到底|现在|刚刚|刚才|一下子|一下|请问|麻烦|帮我|直接|算)/gu, '')
+    .replace(/[吗呢呀啊吧了]/gu, '')
+}
+
+function buildCharacterUnits(value, unitSize = 2) {
+  const normalized = cleanText(value)
+
+  if (!normalized) {
+    return new Set()
+  }
+
+  if (normalized.length <= unitSize) {
+    return new Set([normalized])
+  }
+
+  const units = new Set()
+
+  for (let index = 0; index <= normalized.length - unitSize; index += 1) {
+    units.add(normalized.slice(index, index + unitSize))
+  }
+
+  return units
+}
+
+function computeOverlapRatio(leftUnits, rightUnits) {
+  if (leftUnits.size === 0 || rightUnits.size === 0) {
+    return 0
+  }
+
+  let overlap = 0
+
+  for (const unit of leftUnits) {
+    if (rightUnits.has(unit)) {
+      overlap += 1
+    }
+  }
+
+  return overlap / Math.max(1, Math.min(leftUnits.size, rightUnits.size))
+}
+
+function computePreparedReplyMatchScore(request, candidate) {
+  const normalizedRequest = normalizeForSignalMatch(request)
+  const normalizedCandidate = normalizeForSignalMatch(candidate)
+
+  if (!normalizedRequest || !normalizedCandidate) {
+    return 0
+  }
+
+  if (normalizedRequest === normalizedCandidate) {
+    return 1
+  }
+
+  const compactRequest = compactPreparedReplyIntent(request)
+  const compactCandidate = compactPreparedReplyIntent(candidate)
+
+  if (compactRequest && compactCandidate && compactRequest === compactCandidate) {
+    return 0.96
+  }
+
+  if (
+    normalizedRequest.includes(normalizedCandidate)
+    || normalizedCandidate.includes(normalizedRequest)
+  ) {
+    return 0.92
+  }
+
+  if (
+    compactRequest
+    && compactCandidate
+    && (
+      compactRequest.includes(compactCandidate)
+      || compactCandidate.includes(compactRequest)
+    )
+  ) {
+    return 0.86
+  }
+
+  const bigramOverlap = computeOverlapRatio(
+    buildCharacterUnits(compactRequest || normalizedRequest, 2),
+    buildCharacterUnits(compactCandidate || normalizedCandidate, 2)
+  )
+  const charOverlap = computeOverlapRatio(
+    buildCharacterUnits(compactRequest || normalizedRequest, 1),
+    buildCharacterUnits(compactCandidate || normalizedCandidate, 1)
+  )
+
+  return Math.max(
+    (bigramOverlap * 0.7) + (charOverlap * 0.3),
+    compactRequest && compactCandidate
+      ? charOverlap * 0.82
+      : 0
+  )
 }
 
 function isPositiveConfirmationMessage(message) {
@@ -846,6 +1093,367 @@ function formatCompactionMemory(compaction) {
   return lines.join('\n')
 }
 
+function normalizePreparedReplyItems(items) {
+  if (!Array.isArray(items)) {
+    return []
+  }
+
+  return items
+    .map((item) => {
+      const trigger = cleanText(item?.trigger ?? item?.question)
+      const question = cleanText(item?.question ?? item?.trigger)
+      const reply = cleanMultilineText(item?.reply)
+
+      if (!trigger || !reply) {
+        return null
+      }
+
+      return {
+        trigger,
+        question,
+        reply
+      }
+    })
+    .filter(Boolean)
+    .slice(0, 6)
+}
+
+function collectPreparedReplyCandidatePhrases(item, preparedContext) {
+  const phrases = [
+    item?.trigger,
+    item?.question
+  ]
+
+  if ((preparedContext?.ready_replies?.length ?? 0) === 1) {
+    phrases.push(
+      ...(Array.isArray(preparedContext?.likely_followups) ? preparedContext.likely_followups : []),
+      ...(Array.isArray(preparedContext?.operator_focuses) ? preparedContext.operator_focuses : [])
+    )
+  }
+
+  return uniqueStringValues(phrases)
+}
+
+function buildFeishuBackgroundPrecomputeSystemPrompt() {
+  return buildPromptContract({
+    sections: [
+      {
+        title: 'ROLE',
+        lines: [
+          'You are the background preparation daemon for a long-running Feishu operator assistant.'
+        ]
+      },
+      {
+        title: 'TASK',
+        lines: [
+          'Use idle time to precompute likely operator focus, likely follow-up questions, fast direct replies, and low-risk next checks.',
+          'Optimize for future response speed and attention alignment.'
+        ]
+      },
+      {
+        title: 'OUTPUT CONTRACT',
+        bullet: false,
+        lines: [
+          'Return JSON only with no markdown fence and no prose outside the JSON object.',
+          'Use this schema:',
+          '{',
+          '  "summary": "short Chinese background summary",',
+          '  "operator_focuses": ["what the operator likely cares about now"],',
+          '  "likely_followups": ["likely next short question"],',
+          '  "ready_replies": [',
+          '    {',
+          '      "trigger": "short Chinese trigger fragment",',
+          '      "question": "likely operator wording",',
+          '      "reply": "short Chinese answer ready to send directly"',
+          '    }',
+          '  ],',
+          '  "next_checks": ["safe next check that could be prepared mentally"],',
+          '  "attention_rules": ["how foreground attention should prioritize context"]',
+          '}'
+        ]
+      },
+      {
+        title: 'EXECUTION PROTOCOL',
+        lines: [
+          'Current operator message and quoted thread are always higher priority than older assistant replies.',
+          'Prepare fast answers, but do not invent facts, paths, ports, or completion states.',
+          'Do not dump internal command details unless the operator explicitly asks.',
+          'Triggers must be short and easy to match against future operator messages.',
+          'When operator rules emphasize short direct answers or markdown structure, encode that style bias into the ready replies.'
+        ]
+      }
+    ]
+  })
+}
+
+function buildFeishuBackgroundPrecomputePrompt({
+  sessionSummary = null,
+  recentTranscript = [],
+  longTermMemory = [],
+  operatorRules = [],
+  preparedContext = null
+}) {
+  const sections = []
+
+  if (preparedContext?.summary) {
+    sections.push({
+      title: 'PREVIOUS PREPARED CONTEXT',
+      bullet: false,
+      lines: [
+        `summary: ${preparedContext.summary}`,
+        preparedContext.operator_focuses?.length
+          ? `operator_focuses: ${preparedContext.operator_focuses.join('；')}`
+          : null,
+        preparedContext.likely_followups?.length
+          ? `likely_followups: ${preparedContext.likely_followups.join('；')}`
+          : null
+      ]
+    })
+  }
+
+  if (sessionSummary) {
+    sections.push({
+      title: 'CURRENT SESSION SUMMARY',
+      bullet: false,
+      lines: [sessionSummary]
+    })
+  }
+
+  if (recentTranscript.length > 0) {
+    sections.push({
+      title: 'RECENT TRANSCRIPT',
+      lines: recentTranscript
+    })
+  }
+
+  if (operatorRules.length > 0) {
+    sections.push({
+      title: 'OPERATOR RULES',
+      lines: operatorRules.map((rule) => `[${rule.kind}] ${rule.content}`)
+    })
+  }
+
+  if (longTermMemory.length > 0) {
+    sections.push({
+      title: 'LONG-TERM MEMORY',
+      lines: longTermMemory
+    })
+  }
+
+  return buildPromptContract({
+    sections
+  })
+}
+
+function parseFeishuBackgroundPrecomputeResponse({ text }) {
+  const parsed = JSON.parse(extractJsonObject(text))
+  const summary = cleanText(parsed.summary)
+
+  if (!summary) {
+    throw new Error('Background precompute response did not include a summary')
+  }
+
+  return {
+    summary,
+    operator_focuses: normalizeCompactionItems(parsed.operator_focuses ?? parsed.operatorFocuses),
+    likely_followups: normalizeCompactionItems(parsed.likely_followups ?? parsed.likelyFollowups),
+    ready_replies: normalizePreparedReplyItems(parsed.ready_replies ?? parsed.readyReplies),
+    next_checks: normalizeCompactionItems(parsed.next_checks ?? parsed.nextChecks),
+    attention_rules: normalizeCompactionItems(parsed.attention_rules ?? parsed.attentionRules)
+  }
+}
+
+function buildFeishuConversationSystemPrompt() {
+  return buildPromptContract({
+    sections: [
+      {
+        title: 'ROLE',
+        lines: [
+          'You answer the operator directly inside an ongoing Feishu thread.'
+        ]
+      },
+      {
+        title: 'TASK',
+        lines: [
+          'Answer the current operator message naturally in Chinese.',
+          'Prioritize the current message first, then any explicitly quoted thread, then the older session context.'
+        ]
+      },
+      {
+        title: 'RESPONSE RULES',
+        lines: [
+          'Simple follow-up questions should be answered in 1 to 3 short sentences.',
+          'If the operator asks for structured detail, use light markdown with short sections.',
+          'Do not dump shell commands, curl snippets, raw paths, ports, or inventory unless explicitly asked.',
+          'Sound like a sharp human operator, not like a planning engine.'
+        ]
+      },
+      {
+        title: 'OUTPUT CONTRACT',
+        bullet: false,
+        lines: [
+          'Return Chinese reply text only.',
+          'Do not wrap the answer in JSON or markdown fences.'
+        ]
+      }
+    ]
+  })
+}
+
+function buildFeishuConversationPrompt({
+  message,
+  attentionContext,
+  sessionSummary = null,
+  longTermMemory = [],
+  recentTranscript = [],
+  operatorRules = [],
+  preparedContext = null
+}) {
+  const sections = [
+    {
+      title: 'ATTENTION STACK',
+      lines: buildAttentionStackLines(attentionContext)
+    },
+    {
+      title: 'CURRENT OPERATOR MESSAGE',
+      bullet: false,
+      lines: [buildOperatorRequest(message)]
+    }
+  ]
+
+  if (attentionContext.primary_reference) {
+    sections.push({
+      title: 'REFERENCED MESSAGE',
+      bullet: false,
+      lines: [
+        `[${attentionContext.primary_reference.role}] ${attentionContext.primary_reference.content}`
+      ]
+    })
+  }
+
+  if (preparedContext?.summary) {
+    sections.push({
+      title: 'PREPARED CONTEXT',
+      bullet: false,
+      lines: [
+        `summary: ${preparedContext.summary}`,
+        preparedContext.operator_focuses?.length
+          ? `operator_focuses: ${preparedContext.operator_focuses.join('；')}`
+          : null,
+        preparedContext.likely_followups?.length
+          ? `likely_followups: ${preparedContext.likely_followups.join('；')}`
+          : null,
+        preparedContext.ready_replies?.length
+          ? `ready_replies: ${preparedContext.ready_replies
+            .map((item) => `${item.question ?? item.trigger} -> ${item.reply}`)
+            .join('；')}`
+          : null,
+        preparedContext.next_checks?.length
+          ? `next_checks: ${preparedContext.next_checks.join('；')}`
+          : null,
+        preparedContext.attention_rules?.length
+          ? `attention_rules: ${preparedContext.attention_rules.join('；')}`
+          : null
+      ]
+    })
+  }
+
+  if (sessionSummary) {
+    sections.push({
+      title: 'CURRENT SESSION SUMMARY',
+      bullet: false,
+      lines: [sessionSummary]
+    })
+  }
+
+  if (recentTranscript.length > 0) {
+    sections.push({
+      title: 'RECENT TRANSCRIPT',
+      lines: recentTranscript
+    })
+  }
+
+  if (operatorRules.length > 0) {
+    sections.push({
+      title: 'OPERATOR RULES',
+      lines: operatorRules.map((rule) => `[${rule.kind}] ${rule.content}`)
+    })
+  }
+
+  if (longTermMemory.length > 0) {
+    sections.push({
+      title: 'LONG-TERM MEMORY',
+      lines: longTermMemory
+    })
+  }
+
+  return buildPromptContract({
+    sections
+  })
+}
+
+function shouldUseFeishuConversationReply({
+  message,
+  attentionContext
+}) {
+  const request = cleanText(buildOperatorRequest(message))
+
+  if (!request) {
+    return false
+  }
+
+  const looksLikeQuestion = /[?？]$/.test(request)
+  const looksLikeMetaFollowUp = /^(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|哪里改了|做到哪了|现在呢|上面那个)/u.test(request)
+    || /(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|做到哪了|你刚刚|你上面|这个意思|这次改动|大改)/u.test(request)
+  const looksLikeNewTask = /(帮我|麻烦|看下|看一下|看看|确认|确认下|确认一下|核对|顺手看|查下|查一下|查查|排查|继续|接着|修复|改一下|改成|部署|上线|运行|执行|测试|停掉|启动|清理|新增|加个|做个)/u.test(request)
+
+  if (attentionContext.primary_reference) {
+    return !looksLikeNewTask || looksLikeQuestion || looksLikeMetaFollowUp
+  }
+
+  return (looksLikeQuestion || looksLikeMetaFollowUp) && !looksLikeNewTask && request.length <= 48
+}
+
+function shouldUseConversationCard(replyText) {
+  const text = cleanMultilineText(replyText)
+
+  return text.includes('\n\n') || text.split('\n').length >= 4 || text.length >= 180
+}
+
+function matchPreparedReply(message, preparedContext) {
+  if (!preparedContext || !Array.isArray(preparedContext.ready_replies)) {
+    return null
+  }
+
+  const request = buildOperatorRequest(message)
+
+  if (!request) {
+    return null
+  }
+
+  let bestMatch = null
+
+  for (const item of preparedContext.ready_replies) {
+    const score = Math.max(
+      ...collectPreparedReplyCandidatePhrases(item, preparedContext)
+        .map((candidate) => computePreparedReplyMatchScore(request, candidate))
+    )
+
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = {
+        item,
+        score
+      }
+    }
+  }
+
+  if (!bestMatch || bestMatch.score < 0.58) {
+    return null
+  }
+
+  return bestMatch.item
+}
+
 export function createServerManagerRuntime({
   storageRoot,
   feishuGateway = null,
@@ -859,6 +1467,7 @@ export function createServerManagerRuntime({
   longRunningCheckpointMs = DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS,
   longRunningExtensionApprovalMs = DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS,
   longRunningFinalStopMs = DEFAULT_FEISHU_FINAL_TIMEOUT_MS,
+  backgroundPrecomputeIntervalMs = DEFAULT_BACKGROUND_PRECOMPUTE_INTERVAL_MS,
   contextCompactionIntervalMs = DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS,
   feishuAppendMergeWindowMs = DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS,
   nowFn = Date.now,
@@ -881,6 +1490,9 @@ export function createServerManagerRuntime({
     pending: [],
     lastEnqueuedAtMs: null,
     drainPromise: null
+  }
+  const feishuBackgroundState = {
+    scheduled_timer: null
   }
   const feishuRuntimeState = {
     active_run: null
@@ -1045,6 +1657,20 @@ export function createServerManagerRuntime({
     return normalizeFeishuOperatorProfile(state?.operator_profile)
   }
 
+  async function loadPreparedFeishuContext(sessionId = null) {
+    const state = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+
+    if (!state?.prepared_context) {
+      return null
+    }
+
+    if (sessionId && state.session_id && state.session_id !== sessionId) {
+      return null
+    }
+
+    return state.prepared_context
+  }
+
   async function writeFeishuOperatorProfile(partialProfile) {
     const currentAt = nowIso()
     const state = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
@@ -1062,6 +1688,32 @@ export function createServerManagerRuntime({
     })
 
     return nextProfile
+  }
+
+  function scheduleFeishuBackgroundPrecomputeSoon(
+    delayMs = DEFAULT_BACKGROUND_PRECOMPUTE_TRIGGER_DELAY_MS
+  ) {
+    if (!bailianProvider || !managerProfile.background_precompute?.enabled) {
+      return false
+    }
+
+    if (feishuBackgroundState.scheduled_timer) {
+      return true
+    }
+
+    const timer = setTimeoutFn(() => {
+      if (feishuBackgroundState.scheduled_timer === timer) {
+        feishuBackgroundState.scheduled_timer = null
+      }
+
+      Promise.resolve()
+        .then(() => runFeishuBackgroundPrecomputeOnce())
+        .catch(() => {})
+    }, delayMs)
+
+    timer?.unref?.()
+    feishuBackgroundState.scheduled_timer = timer
+    return true
   }
 
   function getCompactionLockPath(channelKey) {
@@ -1260,13 +1912,15 @@ export function createServerManagerRuntime({
     const existingState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
     const title = buildOperatorTitle(message)
     const userRequest = buildOperatorRequest(message)
+    const userMessageMeta = buildFeishuUserMessageMeta(message)
 
     if (existingState?.session_id) {
       try {
         const continued = await sessionStore.startNextTurn(existingState.session_id, {
           title,
           userRequest,
-          startedAt: currentAt
+          startedAt: currentAt,
+          userMessageMeta
         })
         const nextState = await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
           ...existingState,
@@ -1301,7 +1955,8 @@ export function createServerManagerRuntime({
       title,
       projectKey: 'remote-server-manager',
       userRequest,
-      summary: 'Received feishu operator request'
+      summary: 'Received feishu operator request',
+      userMessageMeta
     })
     const nextState = await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
       channel: 'feishu',
@@ -1310,6 +1965,8 @@ export function createServerManagerRuntime({
       updated_at: currentAt,
       last_message_at: currentAt,
       last_compacted_at: currentAt,
+      last_background_precompute_at: null,
+      prepared_context: null,
       operator_profile: normalizeFeishuOperatorProfile(existingState?.operator_profile),
       version: 1
     })
@@ -1629,8 +2286,276 @@ export function createServerManagerRuntime({
     })
   }
 
+  async function runFeishuBackgroundPrecomputeOnce() {
+    if (!bailianProvider || !managerProfile.background_precompute?.enabled) {
+      return {
+        status: 'disabled'
+      }
+    }
+
+    const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+
+    if (!channelState?.session_id) {
+      return {
+        status: 'idle'
+      }
+    }
+
+    if (feishuRuntimeState.active_run) {
+      return {
+        status: 'busy'
+      }
+    }
+
+    const lastPreparedAtMs = parseIsoTimestamp(channelState.last_background_precompute_at)
+
+    if (
+      lastPreparedAtMs != null
+      && nowFn() - lastPreparedAtMs < backgroundPrecomputeIntervalMs
+    ) {
+      return {
+        status: 'not_due'
+      }
+    }
+
+    const sessionId = channelState.session_id
+
+    try {
+      const snapshot = await sessionStore.loadSession(sessionId)
+      const feedbackRules = await memoryStore.searchMemoryEntries({
+        sessionId,
+        scope: 'project',
+        tag: 'feedback_rule'
+      })
+      const confirmationSignals = await memoryStore.searchMemoryEntries({
+        sessionId,
+        scope: 'project',
+        tag: 'confirmation_signal'
+      })
+      const operatorRules = prioritizeFeedbackEntries([
+        ...feedbackRules,
+        ...confirmationSignals
+      ]).slice(0, 6)
+      const longTermMemory = (
+        await memoryStore.searchMemoryEntries({
+          sessionId,
+          scope: 'session',
+          tag: 'context_compaction'
+        })
+      )
+        .slice(-1)
+        .map((entry) => entry.content)
+      const recentTranscript = buildTranscriptLines(snapshot.timeline, {
+        maxMessages: 12
+      })
+      const providerResult = await bailianProvider.invokeByIntent({
+        intent: 'background',
+        systemPrompt: buildFeishuBackgroundPrecomputeSystemPrompt(),
+        prompt: buildFeishuBackgroundPrecomputePrompt({
+          sessionSummary: snapshot.session.summary ?? null,
+          recentTranscript,
+          longTermMemory,
+          operatorRules,
+          preparedContext: channelState.prepared_context ?? null
+        })
+      })
+      const preparedContext = parseFeishuBackgroundPrecomputeResponse({
+        text: providerResult.response.content ?? ''
+      })
+      const currentAt = nowIso()
+
+      await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+        ...channelState,
+        updated_at: currentAt,
+        last_background_precompute_at: currentAt,
+        prepared_context: {
+          ...preparedContext,
+          generated_at: currentAt,
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+          model: providerResult.route.model
+        },
+        version: 1
+      })
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'background_precompute_completed',
+        actor: 'manager:background',
+        payload: {
+          model: providerResult.route.model,
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+          ready_reply_count: preparedContext.ready_replies.length,
+          focus_count: preparedContext.operator_focuses.length
+        },
+        at: currentAt
+      })
+      await emitHook({
+        name: 'manager.background_precompute.completed',
+        sessionId,
+        channel: 'feishu',
+        actor: 'manager:background',
+        payload: {
+          model: providerResult.route.model,
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+          ready_reply_count: preparedContext.ready_replies.length,
+          focus_count: preparedContext.operator_focuses.length
+        }
+      })
+
+      return {
+        status: 'prepared',
+        prepared_context: preparedContext
+      }
+    } catch (error) {
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'background_precompute_failed',
+        actor: 'manager:background',
+        payload: {
+          message: error.message
+        },
+        at: nowIso()
+      })
+
+      return {
+        status: 'failed',
+        error: error.message
+      }
+    }
+  }
+
+  async function answerFeishuConversationQuestion({
+    sessionId,
+    message,
+    snapshot,
+    attentionContext
+  }) {
+    const preparedContext = await loadPreparedFeishuContext(sessionId)
+    const preparedReply = matchPreparedReply(message, preparedContext)
+
+    if (preparedReply) {
+      return {
+        text: preparedReply.reply,
+        source: 'prepared_context',
+        prepared_context: preparedContext
+      }
+    }
+
+    const feedbackRules = await memoryStore.searchMemoryEntries({
+      sessionId,
+      scope: 'project',
+      tag: 'feedback_rule'
+    })
+    const confirmationSignals = await memoryStore.searchMemoryEntries({
+      sessionId,
+      scope: 'project',
+      tag: 'confirmation_signal'
+    })
+    const operatorRules = prioritizeFeedbackEntries([
+      ...feedbackRules,
+      ...confirmationSignals
+    ]).slice(0, 6)
+    const longTermMemory = (
+      await memoryStore.searchMemoryEntries({
+        sessionId,
+        scope: 'session',
+        tag: 'context_compaction'
+      })
+    )
+      .slice(-1)
+      .map((entry) => entry.content)
+    const recentTranscript = buildTranscriptLines(snapshot.timeline, {
+      excludeTaskId: snapshot.task.id,
+      maxMessages: 8
+    })
+
+    if (!bailianProvider) {
+      return {
+        text: attentionContext.primary_reference?.content
+          ? `我先接你现在这句。你现在问的是「${compactMultilineText(buildOperatorRequest(message))}」，上一条相关内容是「${compactMultilineText(attentionContext.primary_reference.content)}」。`
+          : snapshot.session.summary ?? '我先按你当前这句来理解，继续说。'
+      }
+    }
+
+    const providerResult = await bailianProvider.invokeByIntent({
+      intent: 'summary',
+      systemPrompt: buildFeishuConversationSystemPrompt(),
+      prompt: buildFeishuConversationPrompt({
+        message,
+        attentionContext,
+        sessionSummary: snapshot.session.summary ?? null,
+        longTermMemory,
+        recentTranscript,
+        operatorRules,
+        preparedContext
+      })
+    })
+
+    return {
+      text: cleanMultilineText(providerResult.response.content ?? ''),
+      source: 'llm',
+      provider_result: {
+        route: providerResult.route,
+        request: providerResult.request
+      },
+      prepared_context: preparedContext
+    }
+  }
+
+  async function completeConversationReplySession({
+    sessionId,
+    replyText,
+    relation
+  }) {
+    const plan = await sessionStore.createPlan(sessionId, {
+      steps: [
+        {
+          title: 'Answer operator follow-up',
+          kind: 'report',
+          notes: 'Direct conversational reply without starting a new execution plan.'
+        }
+      ]
+    })
+
+    await sessionStore.appendTimelineEvent(sessionId, {
+      kind: 'manager_follow_up_answered',
+      actor: 'manager:runtime',
+      payload: {
+        relation,
+        reply_text: replyText
+      }
+    })
+    await emitHook({
+      name: 'manager.follow_up.answered',
+      sessionId,
+      channel: 'feishu',
+      actor: 'manager:runtime',
+      payload: {
+        relation
+      }
+    })
+    await sessionStore.completePlanStep(sessionId, plan.steps[0].id, {
+      resultSummary: replyText
+    })
+  }
+
+  async function runFeishuHousekeepingOnce() {
+    const compaction = await runFeishuMaintenanceOnce()
+    const background = await runFeishuBackgroundPrecomputeOnce()
+
+    return {
+      status: 'ok',
+      compaction,
+      background
+    }
+  }
+
   function startFeishuMaintenanceLoop() {
-    const pollIntervalMs = computeMaintenancePollInterval(contextCompactionIntervalMs)
+    const pollIntervalMs = Math.max(
+      1000,
+      Math.min(
+        computeMaintenancePollInterval(contextCompactionIntervalMs)
+          ?? DEFAULT_MAINTENANCE_POLL_INTERVAL_MS,
+        backgroundPrecomputeIntervalMs
+      )
+    )
 
     if (pollIntervalMs == null) {
       return {
@@ -1644,7 +2569,7 @@ export function createServerManagerRuntime({
       setTimeoutFn,
       clearTimeoutFn,
       intervalMs: pollIntervalMs,
-      runOnce: runFeishuMaintenanceOnce
+      runOnce: runFeishuHousekeepingOnce
     })
 
     return {
@@ -1657,6 +2582,7 @@ export function createServerManagerRuntime({
   async function planSession({
     sessionId,
     message,
+    attentionContext = null,
     shouldStop = null
   }) {
     if (!bailianProvider) {
@@ -1692,6 +2618,7 @@ export function createServerManagerRuntime({
       excludeTaskId: snapshot.task.id,
       maxMessages: 10
     })
+    const preparedContext = await loadPreparedFeishuContext(sessionId)
     const serviceInventory = await infrastructureRegistry.listServices()
     const routeInventory = await infrastructureRegistry.listRoutes()
     await emitHook({
@@ -1703,6 +2630,7 @@ export function createServerManagerRuntime({
         operator_rule_count: operatorRules.length,
         long_term_memory_count: longTermMemory.length,
         transcript_line_count: recentTranscript.length,
+        prepared_context_present: Boolean(preparedContext?.summary),
         service_inventory_count: serviceInventory.length,
         route_inventory_count: routeInventory.length
       }
@@ -1719,6 +2647,8 @@ export function createServerManagerRuntime({
         sessionSummary: snapshot.session.summary ?? null,
         longTermMemory,
         recentTranscript,
+        attentionContext,
+        preparedContext,
         serviceInventory,
         routeInventory
       })
@@ -2314,7 +3244,6 @@ export function createServerManagerRuntime({
 
     let stopped = false
     let sent = false
-    let sentMessageId = null
     let lastText = null
     let flushPromise = null
 
@@ -2327,26 +3256,7 @@ export function createServerManagerRuntime({
       sent = true
       flushPromise = Promise.resolve()
         .then(async () => {
-          if (sentMessageId) {
-            const update = await updateFeishuText({
-              messageId: sentMessageId,
-              text
-            })
-
-            if (update.ok) {
-              await appendFeishuReplyTimeline({
-                sessionId,
-                stage,
-                delivery: update,
-                content: text,
-                format: 'text',
-                action: 'update'
-              })
-              return update
-            }
-          }
-
-          const delivery = await deliverFeishuReply({
+          return deliverFeishuReply({
             sessionId,
             message,
             text,
@@ -2354,12 +3264,6 @@ export function createServerManagerRuntime({
             format: 'text',
             timelineContent: text
           })
-
-          if (delivery.ok) {
-            sentMessageId = delivery.message_id ?? sentMessageId
-          }
-
-          return delivery
         })
         .catch(async (error) => {
           await sessionStore.appendTimelineEvent(sessionId, {
@@ -3122,6 +4026,7 @@ export function createServerManagerRuntime({
     let sessionId = null
     let planning = null
     let execution = null
+    let directReply = null
     let ackText = null
     let feedbackAck = null
     let finalReplyError = null
@@ -3268,6 +4173,14 @@ export function createServerManagerRuntime({
 
         assertFeishuRunActive(feishuRunState, 'after_compaction')
 
+        const currentSnapshot = await sessionStore.loadSession(sessionId)
+        const attentionContext = channel === 'feishu'
+          ? buildFeishuAttentionContext({
+              message,
+              snapshot: currentSnapshot
+            })
+          : null
+
         if (isLightweightPing(message)) {
           updateFeishuRunProgressState(feishuRunState, {
             phase: 'completed'
@@ -3277,6 +4190,28 @@ export function createServerManagerRuntime({
             sessionId,
             replyText: ackText
           })
+        } else if (
+          channel === 'feishu'
+          && shouldUseFeishuConversationReply({
+            message,
+            attentionContext
+          })
+        ) {
+          updateFeishuRunProgressState(feishuRunState, {
+            phase: 'completed'
+          })
+          directReply = await answerFeishuConversationQuestion({
+            sessionId,
+            message,
+            snapshot: currentSnapshot,
+            attentionContext
+          })
+          ackText = directReply.text
+          await completeConversationReplySession({
+            sessionId,
+            replyText: directReply.text,
+            relation: attentionContext.relation
+          })
         } else if (autoPlan && bailianProvider) {
           updateFeishuRunProgressState(feishuRunState, {
             phase: 'planning'
@@ -3284,6 +4219,7 @@ export function createServerManagerRuntime({
           planning = await planSession({
             sessionId,
             message,
+            attentionContext,
             shouldStop: () => feishuRunState?.stop_requested === true
           })
           updateFeishuRunProgressState(feishuRunState, {
@@ -3510,13 +4446,16 @@ export function createServerManagerRuntime({
           feedbackAck,
           error: finalReplyError
         }) || ackText
-        const useInteractiveReply = operatorProfile.enable_markdown
-          && isComplexFeishuReply({
-            operatorProfile,
-            message,
-            planning,
-            execution
-          })
+        const resolvedFinalText = directReply?.text ?? finalText
+        const useInteractiveReply = directReply
+          ? operatorProfile.enable_markdown && shouldUseConversationCard(directReply.text)
+          : operatorProfile.enable_markdown
+            && isComplexFeishuReply({
+              operatorProfile,
+              message,
+              planning,
+              execution
+            })
 
         if (useInteractiveReply) {
           await deliverFeishuReply({
@@ -3524,23 +4463,28 @@ export function createServerManagerRuntime({
             message,
             stage: 'final_reply',
             format: 'interactive',
-            card: buildFeishuReplyCard({
-              operatorProfile,
-              planning,
-              execution,
-              feedbackAck,
-              error: finalReplyError
-            }),
-            timelineContent: finalText
+            card: directReply
+              ? buildFeishuConversationCard({
+                  title: '当前情况',
+                  content: directReply.text
+                })
+              : buildFeishuReplyCard({
+                  operatorProfile,
+                  planning,
+                  execution,
+                  feedbackAck,
+                  error: finalReplyError
+                }),
+            timelineContent: resolvedFinalText
           })
         } else {
           await deliverFeishuReply({
             sessionId,
             message,
-            text: finalText,
+            text: resolvedFinalText,
             stage: 'final_reply',
             format: 'text',
-            timelineContent: finalText
+            timelineContent: resolvedFinalText
           })
         }
       }
@@ -3550,11 +4494,16 @@ export function createServerManagerRuntime({
         ack_text: ackText,
         planning,
         execution,
+        direct_reply: directReply,
         stopped: suppressFinalReply
       }
     } finally {
       if (feishuRuntimeState.active_run === feishuRunState) {
         feishuRuntimeState.active_run = null
+      }
+
+      if (channel === 'feishu' && !suppressFinalReply && !finalReplyError) {
+        scheduleFeishuBackgroundPrecomputeSoon()
       }
     }
   }
@@ -3614,7 +4563,8 @@ export function createServerManagerRuntime({
       channel_state: state,
       maintenance_state: {
         started: maintenance.started,
-        poll_interval_ms: maintenance.poll_interval_ms
+        poll_interval_ms: maintenance.poll_interval_ms,
+        background_precompute_enabled: managerProfile.background_precompute?.enabled === true
       }
     }
   }
@@ -3625,6 +4575,7 @@ export function createServerManagerRuntime({
     planSession,
     handleChannelMessage,
     runFeishuMaintenanceOnce,
+    runFeishuBackgroundPrecomputeOnce,
     startFeishuLoop
   }
 }

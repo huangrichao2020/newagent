@@ -35,7 +35,9 @@ async function createHarness({
   const replies = []
   const plannerCalls = []
   const summaryCalls = []
+  const conversationCalls = []
   const evaluationCalls = []
+  const backgroundCalls = []
   const providerCalls = []
   let generatedReplyId = 0
   const managerProfile = createRemoteServerManagerProfile({
@@ -138,7 +140,9 @@ async function createHarness({
     replies,
     plannerCalls,
     summaryCalls,
+    conversationCalls,
     evaluationCalls,
+    backgroundCalls,
     providerCalls,
     feishuGateway,
     runtime: createServerManagerRuntime({
@@ -193,6 +197,67 @@ async function createHarness({
                   total_tokens: 88
                 },
                 content: JSON.stringify(evaluationResponse)
+              }
+            }
+          }
+
+          if (input.intent === 'background') {
+            backgroundCalls.push(input)
+
+            return {
+              route: {
+                provider: 'openrouter',
+                model: 'stepfun/step-3.5-flash:free'
+              },
+              request: {
+                base_url: 'https://openrouter.ai/api/v1',
+                model: 'stepfun/step-3.5-flash:free'
+              },
+              response: {
+                id: 'chatcmpl-manager-background',
+                model: 'stepfun/step-3.5-flash:free',
+                finish_reason: 'stop',
+                usage: {
+                  total_tokens: 72
+                },
+                content: JSON.stringify({
+                  summary: '当前重点是快答改动范围、进度和下一步。',
+                  operator_focuses: ['这次到底改了什么', '现在做到哪了'],
+                  likely_followups: ['是不是大改了', '改了哪里'],
+                  ready_replies: [
+                    {
+                      trigger: '改了哪里',
+                      question: '这次主要改了哪里',
+                      reply: '这次主要改了超时机制、基础设施 registry 和飞书回复链路。'
+                    }
+                  ],
+                  next_checks: ['继续收紧 direct reply 和引用消息注意力'],
+                  attention_rules: ['当前用户消息优先，别先倒项目表']
+                })
+              }
+            }
+          }
+
+          if (input.intent === 'summary') {
+            conversationCalls.push(input)
+
+            return {
+              route: {
+                provider: 'bailian',
+                model: 'qwen3.5-plus'
+              },
+              request: {
+                base_url: 'https://coding.dashscope.aliyuncs.com/v1',
+                model: 'qwen3.5-plus'
+              },
+              response: {
+                id: 'chatcmpl-manager-conversation',
+                model: 'qwen3.5-plus',
+                finish_reason: 'stop',
+                usage: {
+                  total_tokens: 84
+                },
+                content: '算是中等改动。核心是补了超时机制、基础设施 registry，还有飞书回复链路的收口，不是推翻重写。'
               }
             }
           }
@@ -399,6 +464,51 @@ test('handleChannelMessage records positive confirmation signals as reusable mem
 
   assert.equal(confirmationSignals.length, 1)
   assert.match(confirmationSignals[0].content, /用户确认上一轮有效做法可继续沿用/)
+})
+
+test('handleChannelMessage answers a quoted follow-up question directly without replanning', async () => {
+  const { runtime, sessionStore, replies, plannerCalls, conversationCalls } = await createHarness()
+
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_followup_1',
+      chat_id: 'oc_followup',
+      sender_open_id: 'ou_followup',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const firstSnapshot = await sessionStore.loadSession(first.session_id)
+  const referencedMessageId = firstSnapshot.timeline
+    .filter((event) =>
+      event.kind === 'assistant_message_added'
+      && event.payload?.stage === 'final_reply'
+      && event.payload?.message_id
+    )
+    .at(-1)?.payload?.message_id
+
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_followup_2',
+      chat_id: 'oc_followup',
+      sender_open_id: 'ou_followup',
+      text: '是不是大改了，改了哪里？',
+      parent_message_id: referencedMessageId,
+      referenced_message_ids: [referencedMessageId]
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  assert.equal(first.session_id, second.session_id)
+  assert.equal(plannerCalls.length, 1)
+  assert.equal(conversationCalls.length, 1)
+  assert.equal(second.planning, null)
+  assert.equal(second.execution, null)
+  assert.match(second.direct_reply.text, /超时机制|registry|飞书回复链路/)
+  assert.match(conversationCalls[0].prompt, /ATTENTION STACK:/)
+  assert.match(conversationCalls[0].prompt, /REFERENCED MESSAGE:/)
 })
 
 test('handleChannelMessage can use external review as a second judge before auto execution', async () => {
@@ -747,8 +857,12 @@ test('startFeishuLoop enables thinking mode, streams progress updates, and sends
   })
 
   assert.equal(
-    replies.some((entry) => entry.method === 'updateTextMessage'),
+    replies.some((entry) => entry.method === 'replyTextMessage'),
     true
+  )
+  assert.equal(
+    replies.some((entry) => entry.method === 'updateTextMessage'),
+    false
   )
 
   const finalCard = [...replies]
@@ -757,8 +871,63 @@ test('startFeishuLoop enables thinking mode, streams progress updates, and sends
 
   assert.ok(finalCard)
   assert.match(finalCard.card.header.title.content, /已完成|处理中|等待审批/)
-  assert.match(finalCard.card.elements[0].content, /快捷指令/)
   assert.match(finalCard.card.elements[0].content, /本轮处理|当前结论|下一步/)
+})
+
+test('runFeishuBackgroundPrecomputeOnce prepares ready replies for fuzzy likely follow-ups', async () => {
+  const { runtime, backgroundCalls, conversationCalls } = await createHarness({
+    enableExternalReview: true
+  })
+
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_1',
+      chat_id: 'oc_bg',
+      sender_open_id: 'ou_bg',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  const prepared = await runtime.runFeishuBackgroundPrecomputeOnce()
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_2',
+      chat_id: 'oc_bg',
+      sender_open_id: 'ou_bg',
+      text: '这次算大改吗？'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  assert.equal(prepared.status, 'prepared')
+  assert.equal(backgroundCalls.length >= 1, true)
+  assert.equal(conversationCalls.length, 0)
+  assert.equal(first.session_id, second.session_id)
+  assert.match(second.direct_reply.text, /超时机制、基础设施 registry 和飞书回复链路/)
+})
+
+test('handleChannelMessage eagerly schedules background precompute after a completed Feishu turn', async () => {
+  const { runtime, backgroundCalls } = await createHarness({
+    enableExternalReview: true
+  })
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_bg_eager_1',
+      chat_id: 'oc_bg_eager',
+      sender_open_id: 'ou_bg_eager',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 220))
+
+  assert.equal(backgroundCalls.length >= 1, true)
 })
 
 test('startFeishuLoop accepts /appendmsg and queues appended suggestions behind the active turn', async () => {

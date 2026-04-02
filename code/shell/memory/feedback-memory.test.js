@@ -42,6 +42,33 @@ test('extractFeedbackMemoryCandidates ignores ordinary operational requests', ()
   assert.deepEqual(candidates, [])
 })
 
+test('extractFeedbackMemoryCandidates recognizes thread-first attention and idle precompute preferences', () => {
+  const candidates = extractFeedbackMemoryCandidates({
+    channel: 'feishu',
+    messageText:
+      '如果我引用并回复它的消息，你就严格遵照这个引用线程来答；别一直说当前模式和可继续补充。平时别闲着，免费 AI 多做预制菜，猜我关注和下一问。'
+  })
+
+  assert.equal(
+    candidates.some((candidate) =>
+      candidate.content.includes('优先沿着该引用线程继续回答')
+    ),
+    true
+  )
+  assert.equal(
+    candidates.some((candidate) =>
+      candidate.content.includes('不要在普通回复里反复重复当前模式')
+    ),
+    true
+  )
+  assert.equal(
+    candidates.some((candidate) =>
+      candidate.content.includes('空闲时持续用低成本模型预判下一问')
+    ),
+    true
+  )
+})
+
 test('prioritizeFeedbackEntries places operating rules before generic facts', () => {
   const entries = prioritizeFeedbackEntries([
     {

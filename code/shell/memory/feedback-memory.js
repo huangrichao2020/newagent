@@ -222,5 +222,129 @@ export function extractFeedbackMemoryCandidates({
     })
   }
 
+  if (
+    mentionsFeishu &&
+    includesAny(normalized, [
+      '引用消息',
+      '引用并回复',
+      '回复或引用',
+      '严格遵照引用消息',
+      '盖楼式讨论',
+      '盖楼',
+      '回复它的消息',
+      '引用它的消息',
+      'thread',
+      '线程'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '飞书里如果 operator 明确回复或引用某条消息，优先沿着该引用线程继续回答，把这条线程当作最高连续上下文。',
+      tags: ['feishu', 'thread', 'attention']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '我的消息是最应该被关注',
+      '当前消息最重要',
+      '先回答当前问题',
+      '不要自以为是',
+      '不是它自以为是',
+      'newagent的历史答复靠后一点',
+      '历史答复靠后一点'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '先直接回答当前这条 operator 消息；被引用线程次之，旧 assistant 回复和历史上下文再次之。',
+      tags: ['attention', 'priority']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '不用一直说',
+      '不用再提',
+      '别一直说',
+      '不要一直说',
+      '别老说',
+      '反复提',
+      '这些不用一直说',
+      '当前模式',
+      '可继续补充',
+      '需要停止'
+    ])
+  ) {
+    addCandidate({
+      kind: 'anti_pattern',
+      content:
+        '不要在普通回复里反复重复当前模式、可继续补充、停止说明或命令提示；除非用户主动询问。',
+      tags: ['reply_style', 'boilerplate']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '简单的事简短',
+      '简单的事简短得回',
+      '简单的事简短回复',
+      '复杂的事要持续回馈',
+      '复杂的事持续回馈',
+      'markdown',
+      '卡片',
+      '有条有理'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '简单问题直接短答；复杂问题持续反馈关键进展，最后用清晰 markdown 结构收口。',
+      tags: ['reply_style', 'markdown']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '高自主权限',
+      '我授权了',
+      '自己决定',
+      '别反复审批',
+      '不用审批',
+      '自动决定'
+    ])
+  ) {
+    addCandidate({
+      kind: 'constraint',
+      content:
+        '默认将安全的检查、汇报和低风险操作视为已授权；只有高风险或可能影响服务可用性的动作才需要再次确认。',
+      tags: ['autonomy', 'approval']
+    })
+  }
+
+  if (
+    includesAny(normalized, [
+      '预制菜',
+      '预案',
+      '猜我关注',
+      '猜我想问',
+      '后台24小时整理',
+      '免费ai',
+      '不要闲着',
+      '提前搞',
+      '持续处理',
+      '平时轻量'
+    ])
+  ) {
+    addCandidate({
+      kind: 'operating_rule',
+      content:
+        '空闲时持续用低成本模型预判下一问、预生成快答和预案，前台优先复用这些准备结果。',
+      tags: ['background', 'latency', 'precompute']
+    })
+  }
+
   return [...candidates.values()]
 }
