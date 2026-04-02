@@ -44,6 +44,23 @@ function normalizeText(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
+function extractPortFromText(value) {
+  const match = String(value ?? '').match(/\b([1-9]\d{1,4})\b/u)
+
+  if (!match) {
+    return null
+  }
+
+  const port = Number.parseInt(match[1], 10)
+  return Number.isInteger(port) && port > 0 ? port : null
+}
+
+function extractPathLikeToken(value) {
+  const match = String(value ?? '').match(/(\/[A-Za-z0-9._~!$&'()*+,;=:@%/\-]+(?:\.html)?\/?)/u)
+
+  return match ? match[1] : null
+}
+
 function latestManagerProjectKeys(snapshot) {
   for (let index = snapshot.timeline.length - 1; index >= 0; index -= 1) {
     const event = snapshot.timeline[index]
@@ -319,6 +336,18 @@ function summarizeSelectionOutput({ toolName, output }) {
     return `已读取项目 ${output.project.project_key} 配置\n${buildProjectSummary(output.project)}`
   }
 
+  if (toolName === 'project_resolve_registry') {
+    return `已解析 ${output.matches?.length ?? 0} 个项目候选`
+  }
+
+  if (toolName === 'project_search_code') {
+    return [
+      `已搜索项目 ${output.project_key}`,
+      `pattern=${output.pattern}`,
+      `matches=${output.results?.length ?? 0}`
+    ].join('\n')
+  }
+
   if (toolName === 'project_probe_endpoint') {
     return [
       `已探活 ${output.project_key ?? output.url}`,
@@ -332,6 +361,98 @@ function summarizeSelectionOutput({ toolName, output }) {
 
   if (toolName === 'project_check_paths') {
     return `已检查 ${output.project_key} 路径\n${summarizePathCheck(output)}`
+  }
+
+  if (toolName === 'infrastructure_list_registry') {
+    return [
+      '已读取基础设施 registry',
+      `projects=${output.projects?.length ?? 0}`,
+      `services=${output.services?.length ?? 0}`,
+      `routes=${output.routes?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'infrastructure_resolve_registry') {
+    return [
+      '已解析基础设施映射',
+      `projects=${output.matches?.projects?.length ?? 0}`,
+      `services=${output.matches?.services?.length ?? 0}`,
+      `routes=${output.matches?.routes?.length ?? 0}`,
+      `listen_port=${output.listen_port ?? 'null'}`,
+      `path_prefix=${output.path_prefix ?? 'null'}`,
+      `entry_html=${output.entry_html ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'server_ops_capability_matrix') {
+    return [
+      '已读取服务器能力矩阵',
+      `deployment_target=${output.deployment_target}`,
+      `capabilities=${output.capabilities?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'server_ops_port_matrix') {
+    return [
+      '已读取端口矩阵',
+      `entries=${output.entries?.length ?? 0}`,
+      `listen_port=${output.listen_port ?? 'null'}`
+    ].join('\n')
+  }
+
+  if (toolName === 'server_ops_service_probe_matrix') {
+    return [
+      '已批量探活服务',
+      `runs=${output.runs?.length ?? 0}`,
+      `ok=${(output.runs ?? []).filter((run) => run.ok === true).length}`,
+      `failed=${(output.runs ?? []).filter((run) => run.ok === false).length}`
+    ].join('\n')
+  }
+
+  if (toolName === 'server_ops_network_interfaces') {
+    return [
+      '已读取网络接口',
+      `interfaces=${output.interfaces?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'tool_catalog_list') {
+    return [
+      '已读取工具目录',
+      `tools=${output.tools?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_scope_list') {
+    return [
+      '已读取飞书权限面',
+      `ready=${output.ready}`,
+      `granted=${output.granted?.length ?? 0}`,
+      `pending=${output.pending?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'channel_feishu_capability_matrix') {
+    return [
+      '已读取飞书能力矩阵',
+      `ready=${output.scopes?.ready ?? output.config?.ready ?? false}`,
+      `capabilities=${output.capabilities?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'news_source_list') {
+    return [
+      '已读取资讯源清单',
+      `sources=${output.sources?.length ?? 0}`
+    ].join('\n')
+  }
+
+  if (toolName === 'news_general_collect' || toolName === 'news_stock_collect' || toolName === 'news_hot_collect') {
+    return [
+      `已拉取资讯 ${toolName}`,
+      `source=${output.source?.source_key ?? 'null'}`,
+      `items=${output.items?.length ?? 0}`
+    ].join('\n')
   }
 
   if (toolName === 'project_pm2_status') {
@@ -388,6 +509,9 @@ export function selectManagerToolForStep({
     projects,
     managerProjectKeys
   })
+  const rawStepText = `${step.title ?? ''} ${step.notes ?? ''}`
+  const explicitPort = extractPortFromText(rawStepText)
+  const explicitPath = extractPathLikeToken(rawStepText)
 
   if (normalizedKind === 'report') {
     return {
@@ -468,6 +592,113 @@ export function selectManagerToolForStep({
   }
 
   if (
+    /工具目录|tool catalog|tool-runtime|tool runtime|工具面|工具族|内部工具/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'tool_catalog_list',
+      tool_input: {
+        query: step.title
+      }
+    }
+  }
+
+  if (
+    /(飞书|feishu)/.test(haystack)
+    && /scope|权限|授权|grant/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'channel_feishu_scope_list',
+      tool_input: {}
+    }
+  }
+
+  if (
+    /(飞书|feishu|wiki|知识库|docx|文档|云盘|drive|bitable|多维表格)/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'channel_feishu_capability_matrix',
+      tool_input: {}
+    }
+  }
+
+  if (
+    /资讯源|source registry|新闻源|news source/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'news_source_list',
+      tool_input: {}
+    }
+  }
+
+  if (
+    /股票资讯|stock news|财经快讯|财联社|东财快讯|news.*stock|stock.*news/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'news_stock_collect',
+      tool_input: {
+        limit: 10
+      }
+    }
+  }
+
+  if (
+    /热榜|热门|hot topic|hot news|v2ex|自媒体/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'news_hot_collect',
+      tool_input: {
+        limit: 10
+      }
+    }
+  }
+
+  if (
+    /新闻|资讯|news/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'news_general_collect',
+      tool_input: {
+        limit: 10
+      }
+    }
+  }
+
+  if (
+    /全局|整体|所有服务|批量探活|health matrix|service matrix|在线情况|服务器状态/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'server_ops_service_probe_matrix',
+      tool_input: {
+        project_key: project?.project_key ?? null
+      }
+    }
+  }
+
+  if (
     /列表|list|inventory|registry|有哪些项目|盘一下|基线/.test(haystack)
     && !project
   ) {
@@ -477,6 +708,80 @@ export function selectManagerToolForStep({
       project,
       tool_name: 'project_list_registry',
       tool_input: {}
+    }
+  }
+
+  if (
+    /能力|capability|ssh|channel|通道|协作|co-worker/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'server_ops_capability_matrix',
+      tool_input: {}
+    }
+  }
+
+  if (
+    /网络|network|网卡|ip 地址|网口|interface/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'server_ops_network_interfaces',
+      tool_input: {}
+    }
+  }
+
+  if (
+    /端口矩阵|监听端口|port table|port matrix|端口清单/.test(haystack)
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'server_ops_port_matrix',
+      tool_input: {
+        project_key: project?.project_key ?? null,
+        listen_port: explicitPort
+      }
+    }
+  }
+
+  if (
+    /端口|port|路由|route|入口|entry|html|页面|静态|映射|path prefix|upstream|public url/.test(haystack)
+    || explicitPort
+    || explicitPath
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project,
+      tool_name: 'infrastructure_resolve_registry',
+      tool_input: {
+        project_key: project?.project_key ?? null,
+        query: step.title,
+        listen_port: explicitPort,
+        path_prefix: explicitPath && !explicitPath.endsWith('.html') ? explicitPath : null,
+        entry_html: explicitPath?.endsWith('.html') ? explicitPath : null
+      }
+    }
+  }
+
+  if (
+    /归谁|哪个项目|pm2 名称|public base path|service endpoint|源码路径/.test(haystack)
+    && !project
+  ) {
+    return {
+      supported: true,
+      action: 'tool',
+      project: null,
+      tool_name: 'project_resolve_registry',
+      tool_input: {
+        query: step.title
+      }
     }
   }
 

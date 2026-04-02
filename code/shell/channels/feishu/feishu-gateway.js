@@ -95,7 +95,7 @@ function normalizeIncomingEvent(eventEnvelope) {
   }
 }
 
-function resolveFeishuConfig({
+export function resolveFeishuConfig({
   appId = null,
   appSecret = null,
   encryptKey = null,
@@ -124,6 +124,40 @@ function resolveFeishuConfig({
       process.env.FEISHU_VERIFICATION_TOKEN ??
       null,
     domain: domain ?? Lark.Domain.Feishu
+  }
+}
+
+export function createFeishuApiClient({
+  appId = null,
+  appSecret = null,
+  encryptKey = null,
+  verificationToken = null,
+  domain = null,
+  sdk = Lark
+} = {}) {
+  const config = resolveFeishuConfig({
+    appId,
+    appSecret,
+    encryptKey,
+    verificationToken,
+    domain
+  })
+
+  if (!config.appId || !config.appSecret) {
+    throw new Error('Missing Feishu credentials. Set NEWAGENT_FEISHU_APP_ID and NEWAGENT_FEISHU_APP_SECRET.')
+  }
+
+  const baseConfig = {
+    appId: config.appId,
+    appSecret: config.appSecret,
+    domain: config.domain,
+    appType: sdk.AppType?.SelfBuild
+  }
+
+  return {
+    config,
+    baseConfig,
+    client: new sdk.Client(baseConfig)
   }
 }
 
@@ -162,13 +196,14 @@ export function createFeishuGateway({
     throw new Error('Missing Feishu credentials. Set NEWAGENT_FEISHU_APP_ID and NEWAGENT_FEISHU_APP_SECRET.')
   }
 
-  const baseConfig = {
+  const { baseConfig, client } = createFeishuApiClient({
     appId: config.appId,
     appSecret: config.appSecret,
+    encryptKey: config.encryptKey,
+    verificationToken: config.verificationToken,
     domain: config.domain,
-    appType: sdk.AppType?.SelfBuild
-  }
-  const client = new sdk.Client(baseConfig)
+    sdk
+  })
   const wsClient = new sdk.WSClient({
     ...baseConfig,
     loggerLevel: sdk.LoggerLevel?.info

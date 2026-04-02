@@ -338,6 +338,96 @@ function buildAttentionStackLines(attentionContext) {
   return lines
 }
 
+function normalizeWorkingNoteList(values = []) {
+  return uniqueStringValues(
+    Array.isArray(values)
+      ? values.map((value) => cleanMultilineText(value))
+      : []
+  ).slice(-6)
+}
+
+function normalizeFeishuWorkingNote(value = {}) {
+  return {
+    primary_request: cleanMultilineText(value?.primary_request),
+    current_focus: cleanMultilineText(value?.current_focus),
+    appended_requests: normalizeWorkingNoteList(value?.appended_requests),
+    follow_up_questions: normalizeWorkingNoteList(value?.follow_up_questions),
+    latest_message: cleanMultilineText(value?.latest_message),
+    updated_at: cleanString(value?.updated_at)
+  }
+}
+
+function classifyFeishuWorkingNoteMessage(message) {
+  const request = cleanText(buildOperatorRequest(message))
+
+  if (!request) {
+    return 'empty'
+  }
+
+  if (request.startsWith('补充建议：') || message?.continuation_hint === 'auto_append') {
+    return 'append'
+  }
+
+  if (
+    collectReferencedMessageIds(message).length > 0
+    || looksLikeFeishuSelfReflectionQuestion(request)
+    || looksLikeFeishuMetaFollowUp(request)
+    || /[?？]$/.test(request)
+  ) {
+    return 'follow_up'
+  }
+
+  return 'fresh'
+}
+
+function mergeFeishuWorkingNote(existingNote, message, nowAt) {
+  const request = cleanMultilineText(buildOperatorRequest(message))
+
+  if (!request) {
+    return normalizeFeishuWorkingNote(existingNote)
+  }
+
+  const base = normalizeFeishuWorkingNote(existingNote)
+  const classification = classifyFeishuWorkingNoteMessage(message)
+
+  if (classification === 'append') {
+    return {
+      primary_request: base.primary_request || base.current_focus || request,
+      current_focus: request,
+      appended_requests: normalizeWorkingNoteList([
+        ...base.appended_requests,
+        request
+      ]),
+      follow_up_questions: base.follow_up_questions,
+      latest_message: request,
+      updated_at: nowAt
+    }
+  }
+
+  if (classification === 'follow_up') {
+    return {
+      primary_request: base.primary_request || request,
+      current_focus: request,
+      appended_requests: base.appended_requests,
+      follow_up_questions: normalizeWorkingNoteList([
+        ...base.follow_up_questions,
+        request
+      ]),
+      latest_message: request,
+      updated_at: nowAt
+    }
+  }
+
+  return {
+    primary_request: request,
+    current_focus: request,
+    appended_requests: [],
+    follow_up_questions: [],
+    latest_message: request,
+    updated_at: nowAt
+  }
+}
+
 function summarizePlanStepsForReply(steps = []) {
   return steps
     .map((step, index) => `${index + 1}. ${compactMultilineText(step.title)}`)

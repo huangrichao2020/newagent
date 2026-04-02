@@ -37,6 +37,34 @@
 - 审批记录
 - review / repair 记录
 
+## Internal Tool Families
+
+为了避免每次都临时拼命令，`newagent` 内部工具要按职责分族，而不是平铺一堆 shell 动作：
+
+- `project_*`
+  负责项目注册、源码/运行/发布路径、PM2 进程、服务端点、代码搜索与业务调用线索。
+- `infrastructure_*`
+  负责项目、服务、路由、端口、静态入口、公开路径之间的映射关系。
+- `server_ops_*`
+  负责服务器日常运维视角的信息面，例如能力矩阵、端口矩阵、批量探活、网络接口等。
+- `news_*`
+  负责通用消息、股票资讯、自媒体热榜等外部信息收集，统一走 source registry 而不是把站点写死在 prompt 里。
+- `channel_*`
+  负责飞书等前台通道的引用回复、reaction、状态同步、楼层关联。
+- `coworker_*`
+  负责和 `codex_mac_local` 这类特殊同事/特殊消息源的协作。
+- `dynamic_tool_*`
+  负责临时脚本和临时工具的注册、调用、评审与转正/退役。
+- `tool_catalog_*`
+  负责让 agent 能先看懂自己当前有哪些稳定工具和临时工具，再决定是否继续写脚本。
+
+原则：
+
+- 常用、高频、低歧义的动作进内建工具。
+- 环境相关、一次性的诊断动作先进动态工具。
+- 动态工具必须带 `category / lifecycle / review_status / restart_*` 元信息。
+- 临时工具跑完后进入 review queue，由维护/运维角色决定是否永久保留。
+
 ## First Managed Server Baseline
 
 当前第一台目标服务器的已知基线是：
@@ -90,6 +118,13 @@ M1 先做这几件事：
 - 计划结果和压缩结果都可以走第二模型复核，并把可复用约束写回 session memory
 - 用飞书回一版中文确认摘要
 - 通过安全工具读取项目注册表和探活服务端点
+- 通过 `news_*` 工具拉通通用资讯、股票资讯和热榜源
+- 通过 `tool_catalog_*` / `dynamic_tool_*` 先盘清自身工具面，再注册临时脚本
+- 通过 `channel_feishu_scope_list` / `channel_feishu_capability_matrix` 检查飞书权限面
+- 通过 `channel_feishu_doc_*` 创建文档、读取文档并追加 markdown/html 内容
+- 通过 `channel_feishu_drive_*` / `channel_feishu_file_upload` 管理云盘目录、移动文件和上传文件
+- 通过 `channel_feishu_wiki_*` 列知识空间、建节点、改标题、移动节点和挂载现有文档
+- 通过 `channel_feishu_bitable_*` 创建多维表格、建表、列记录和增改记录
 - 在 runtime 内自动推进第一版 manager loop
 - 能检查项目的 PM2 进程状态
 - 能自动生成阶段汇报

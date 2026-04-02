@@ -131,11 +131,58 @@ test('selectManagerToolForStep maps inspect steps to safe registry and probe too
     ],
     managerProjectKeys: ['uwillberich']
   })
+  const infrastructureSelection = selectManagerToolForStep({
+    step: {
+      kind: 'inspect',
+      title: '确认 3800 和 /apps/chaochao/ 分别归谁'
+    },
+    projects,
+    managerProjectKeys: ['uwillberich']
+  })
+  const serviceMatrixSelection = selectManagerToolForStep({
+    step: {
+      kind: 'inspect',
+      title: '盘一下服务器整体在线情况'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const capabilitySelection = selectManagerToolForStep({
+    step: {
+      kind: 'inspect',
+      title: '看看当前 ssh 和协作通道能力'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const networkSelection = selectManagerToolForStep({
+    step: {
+      kind: 'inspect',
+      title: '检查当前服务器网络接口'
+    },
+    projects,
+    managerProjectKeys: []
+  })
+  const projectResolveSelection = selectManagerToolForStep({
+    step: {
+      kind: 'inspect',
+      title: '确认 deploy-hub 的源码路径和 service endpoint 归谁'
+    },
+    projects,
+    managerProjectKeys: []
+  })
 
   assert.equal(listSelection.tool_name, 'project_list_registry')
   assert.equal(getSelection.tool_name, 'project_get_registry')
   assert.equal(probeSelection.tool_name, 'project_probe_endpoint')
   assert.equal(pm2Selection.tool_name, 'project_pm2_status')
+  assert.equal(infrastructureSelection.tool_name, 'infrastructure_resolve_registry')
+  assert.equal(serviceMatrixSelection.tool_name, 'server_ops_service_probe_matrix')
+  assert.equal(capabilitySelection.tool_name, 'server_ops_capability_matrix')
+  assert.equal(networkSelection.tool_name, 'server_ops_network_interfaces')
+  assert.equal(projectResolveSelection.tool_name, 'project_resolve_registry')
+  assert.equal(infrastructureSelection.tool_input.listen_port, 3800)
+  assert.equal(infrastructureSelection.tool_input.path_prefix, '/apps/chaochao/')
 })
 
 test('selectManagerToolForStep maps review, repair, and report steps to manager actions', async () => {

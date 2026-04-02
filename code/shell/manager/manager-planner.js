@@ -193,6 +193,7 @@ export function buildManagerPlanningPrompt({
   projects,
   operatorRules = [],
   sessionSummary = null,
+  workingNote = null,
   longTermMemory = [],
   recentTranscript = [],
   serviceInventory = [],
@@ -215,6 +216,26 @@ export function buildManagerPlanningPrompt({
 
   const operatorRequest = cleanString(message.text)
     ?? JSON.stringify(message.content ?? message.raw_content ?? {})
+
+  const workingNoteLines = workingNote
+    ? [
+        workingNote.primary_request
+          ? `primary_request: ${workingNote.primary_request}`
+          : null,
+        workingNote.current_focus
+          ? `current_focus: ${workingNote.current_focus}`
+          : null,
+        Array.isArray(workingNote.appended_requests) && workingNote.appended_requests.length > 0
+          ? `appended_requests: ${workingNote.appended_requests.join('；')}`
+          : null,
+        Array.isArray(workingNote.follow_up_questions) && workingNote.follow_up_questions.length > 0
+          ? `follow_up_questions: ${workingNote.follow_up_questions.join('；')}`
+          : null,
+        workingNote.latest_message
+          ? `latest_message: ${workingNote.latest_message}`
+          : null
+      ].filter(Boolean)
+    : []
 
   const sections = [
     attentionContext
@@ -241,6 +262,14 @@ export function buildManagerPlanningPrompt({
       lines: [operatorRequest]
     }
   ]
+
+  if (workingNoteLines.length > 0) {
+    sections.push({
+      title: 'WORKING NOTE',
+      bullet: false,
+      lines: workingNoteLines
+    })
+  }
 
   if (preparedContext) {
     sections.push({

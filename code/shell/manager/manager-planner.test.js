@@ -114,6 +114,13 @@ test('buildManagerPlanningPrompt includes attention stack and prepared context w
       text: '是不是大改了，主要改了哪里？'
     },
     projects: getAliyunSeedProjects().slice(0, 1),
+    workingNote: {
+      primary_request: '先把这次交互改造收口。',
+      current_focus: '是不是大改了，主要改了哪里？',
+      appended_requests: ['补充建议：默认引用回复'],
+      follow_up_questions: ['是不是大改了，主要改了哪里？'],
+      latest_message: '是不是大改了，主要改了哪里？'
+    },
     attentionContext: {
       primary_reference: {
         role: 'assistant',
@@ -131,6 +138,9 @@ test('buildManagerPlanningPrompt includes attention stack and prepared context w
   assert.match(prompt, /ATTENTION STACK:/)
   assert.match(prompt, /当前正在回复的消息/)
   assert.match(prompt, /超时机制和 registry/)
+  assert.match(prompt, /WORKING NOTE:/)
+  assert.match(prompt, /primary_request: 先把这次交互改造收口/)
+  assert.match(prompt, /appended_requests: 补充建议：默认引用回复/)
   assert.match(prompt, /PREPARED CONTEXT:/)
   assert.match(prompt, /不要先倒项目表/)
 })
