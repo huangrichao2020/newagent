@@ -73,6 +73,7 @@ test('remote manager profile pins the intended channels and model routing', asyn
   assert.equal(profile.model_routing.planner.model, 'codingplan')
   assert.equal(profile.model_routing.execution.model, 'qwen3.5-plus')
   assert.equal(profile.external_review.enabled, false)
+  assert.equal(profile.background_precompute.enabled, false)
   assert.equal(profile.codex_integration.allow_review, true)
   assert.equal(profile.codex_integration.allow_repair, true)
 })
@@ -101,6 +102,9 @@ test('remote manager profile can enable OpenRouter external review without stori
   assert.equal(profile.external_review.enforcing, false)
   assert.equal(profile.model_routing.evaluation.provider, 'openrouter')
   assert.equal(profile.model_routing.evaluation.model, 'stepfun/step-3.5-flash:free')
+  assert.equal(profile.background_precompute.enabled, true)
+  assert.equal(profile.model_routing.background.provider, 'openrouter')
+  assert.equal(profile.model_routing.background.model, 'stepfun/step-3.5-flash:free')
   assert.equal(
     profile.model_routing.evaluation.extra_headers['HTTP-Referer'],
     'https://newagent.local'

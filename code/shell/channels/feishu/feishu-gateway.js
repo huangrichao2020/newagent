@@ -34,12 +34,46 @@ function stringifyMessageContent(content) {
   return JSON.stringify(content)
 }
 
+function uniqueValues(values = []) {
+  return [...new Set(
+    values
+      .map((value) => (value == null ? null : String(value).trim()))
+      .filter(Boolean)
+  )]
+}
+
+function extractReferencedMessageIds({
+  message = {},
+  parsedContent = null
+} = {}) {
+  return uniqueValues([
+    message.parent_id,
+    message.parent_message_id,
+    message.root_id,
+    message.root_message_id,
+    message.reply_to_message_id,
+    message.reply_message_id,
+    parsedContent?.parent_id,
+    parsedContent?.parent_message_id,
+    parsedContent?.root_id,
+    parsedContent?.root_message_id,
+    parsedContent?.reply_to_message_id,
+    parsedContent?.reply_message_id,
+    ...(Array.isArray(message.referenced_message_ids) ? message.referenced_message_ids : []),
+    ...(Array.isArray(parsedContent?.referenced_message_ids) ? parsedContent.referenced_message_ids : [])
+  ]).filter((messageId) => messageId !== message.message_id)
+}
+
 function normalizeIncomingEvent(eventEnvelope) {
   const event = eventEnvelope?.event ?? eventEnvelope ?? {}
   const message = event.message ?? {}
   const sender = event.sender ?? {}
   const senderId = sender.sender_id ?? {}
   const content = parseMessageContent(message.content ?? null)
+  const referencedMessageIds = extractReferencedMessageIds({
+    message,
+    parsedContent: content.parsed
+  })
 
   return {
     event_id: eventEnvelope?.header?.event_id ?? null,
@@ -54,6 +88,9 @@ function normalizeIncomingEvent(eventEnvelope) {
     text: content.text,
     content: content.parsed,
     raw_content: content.raw,
+    parent_message_id: message.parent_id ?? message.parent_message_id ?? null,
+    root_message_id: message.root_id ?? message.root_message_id ?? null,
+    referenced_message_ids: referencedMessageIds,
     raw_event: eventEnvelope
   }
 }

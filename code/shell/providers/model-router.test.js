@@ -60,6 +60,23 @@ test('resolveRoute sends evaluation intents to OpenRouter when external review i
   assert.equal(route.model, 'stepfun/step-3.5-flash:free')
 })
 
+test('resolveRoute sends background intents to OpenRouter when background precompute is enabled', () => {
+  const router = createModelRouter({
+    managerProfile: createRemoteServerManagerProfile({
+      env: {
+        NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
+        NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE: 'true',
+        NEWAGENT_BACKGROUND_PRECOMPUTE_MODEL: 'stepfun/step-3.5-flash:free'
+      }
+    })
+  })
+  const route = router.resolveRoute('background')
+
+  assert.equal(route.runtime, 'llm')
+  assert.equal(route.provider, 'openrouter')
+  assert.equal(route.model, 'stepfun/step-3.5-flash:free')
+})
+
 test('resolveRoute disables review and repair when Codex integration is turned off', () => {
   const router = createModelRouter({
     managerProfile: createRemoteServerManagerProfile({
@@ -87,4 +104,16 @@ test('resolveRoute disables evaluation when external review is turned off', () =
 
   assert.equal(route.runtime, 'disabled')
   assert.match(route.reason, /external evaluation is disabled/i)
+})
+
+test('resolveRoute disables background precompute when it is turned off', () => {
+  const router = createModelRouter({
+    managerProfile: createRemoteServerManagerProfile({
+      env: {}
+    })
+  })
+  const route = router.resolveRoute('background')
+
+  assert.equal(route.runtime, 'disabled')
+  assert.match(route.reason, /background precompute is disabled/i)
 })

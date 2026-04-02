@@ -95,7 +95,8 @@ export function createSessionStore({ storageRoot }) {
     title,
     projectKey,
     userRequest,
-    summary = null
+    summary = null,
+    userMessageMeta = null
   }) {
     const sessionId = createUlid()
     const taskId = createUlid()
@@ -166,7 +167,8 @@ export function createSessionStore({ storageRoot }) {
         kind: 'user_message_added',
         actor: 'user',
         payload: {
-          content: userRequest
+          content: userRequest,
+          ...(userMessageMeta ?? {})
         },
         at: createdAt
       })
@@ -187,7 +189,8 @@ export function createSessionStore({ storageRoot }) {
     title,
     userRequest,
     summary = undefined,
-    startedAt = nowIso()
+    startedAt = nowIso(),
+    userMessageMeta = null
   }) {
     const snapshot = await loadSession(sessionId)
     const paths = createPaths(storageRoot, sessionId)
@@ -272,7 +275,8 @@ export function createSessionStore({ storageRoot }) {
         kind: 'user_message_added',
         actor: 'user',
         payload: {
-          content: userRequest
+          content: userRequest,
+          ...(userMessageMeta ?? {})
         },
         at: startedAt
       })

@@ -15,6 +15,10 @@ const INTENT_TO_ROUTE = new Map([
   ['evaluation', 'evaluation'],
   ['reflect', 'evaluation'],
   ['reflection', 'evaluation'],
+  ['background', 'background'],
+  ['precompute', 'background'],
+  ['prepare', 'background'],
+  ['anticipate', 'background'],
   ['review', 'review'],
   ['repair', 'repair'],
   ['fix', 'repair']
@@ -77,6 +81,17 @@ export function createModelRouter({ managerProfile = createRemoteServerManagerPr
           route_key: routeKey,
           runtime: 'disabled',
           reason: 'External evaluation is disabled for this environment'
+        }
+      }
+    }
+
+    if (routeKey === 'background') {
+      if (!managerProfile.background_precompute?.enabled) {
+        return {
+          intent: normalizedIntent,
+          route_key: routeKey,
+          runtime: 'disabled',
+          reason: 'Background precompute is disabled for this environment'
         }
       }
     }

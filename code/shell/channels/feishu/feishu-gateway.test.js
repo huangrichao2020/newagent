@@ -261,6 +261,51 @@ test('start registers the long-connection message handler and normalizes inbound
   assert.equal(received.message_id, 'om_1')
   assert.equal(received.sender_open_id, 'ou_123')
   assert.equal(received.text, 'hello manager')
+  assert.deepEqual(received.referenced_message_ids, [])
+})
+
+test('start normalizes reply metadata from inbound Feishu events', async () => {
+  const { sdk, calls } = createFakeSdk()
+  const gateway = createFeishuGateway({
+    appId: 'app-id',
+    appSecret: 'app-secret',
+    sdk
+  })
+
+  let received = null
+  await gateway.start({
+    onMessage(message) {
+      received = message
+    }
+  })
+
+  await calls.started.eventDispatcher.handlers['im.message.receive_v1']({
+    header: {
+      event_id: 'evt_reply_1',
+      event_type: 'im.message.receive_v1'
+    },
+    event: {
+      sender: {
+        sender_id: {
+          open_id: 'ou_reply_123'
+        }
+      },
+      message: {
+        message_id: 'om_reply_1',
+        parent_id: 'om_parent_1',
+        root_id: 'om_root_1',
+        chat_id: 'oc_reply_1',
+        chat_type: 'p2p',
+        message_type: 'text',
+        content: '{"text":"继续这个","reply_to_message_id":"om_parent_1"}'
+      }
+    }
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(received.parent_message_id, 'om_parent_1')
+  assert.equal(received.root_message_id, 'om_root_1')
+  assert.deepEqual(received.referenced_message_ids, ['om_parent_1', 'om_root_1'])
 })
 
 test('start de-duplicates repeated Feishu message deliveries by message_id', async () => {
