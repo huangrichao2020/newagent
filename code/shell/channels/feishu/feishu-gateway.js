@@ -356,6 +356,50 @@ export function createFeishuGateway({
     return response
   }
 
+  async function deleteMessageReaction({
+    messageId,
+    reactionId
+  }) {
+    if (!messageId) {
+      throw new Error('Missing required messageId')
+    }
+
+    if (!reactionId) {
+      throw new Error('Missing required reactionId')
+    }
+
+    const response = await client.im.v1.messageReaction.delete({
+      path: {
+        message_id: messageId,
+        reaction_id: reactionId
+      }
+    })
+
+    return response
+  }
+
+  async function listMessageReactions({
+    messageId,
+    reactionType = null,
+    pageSize = 50
+  }) {
+    if (!messageId) {
+      throw new Error('Missing required messageId')
+    }
+
+    const response = await client.im.v1.messageReaction.list({
+      path: {
+        message_id: messageId
+      },
+      params: {
+        reaction_type: reactionType ?? undefined,
+        page_size: pageSize
+      }
+    })
+
+    return response
+  }
+
   async function performImmediateAck({
     messageId,
     reactionEmojiType = null,
@@ -367,7 +411,7 @@ export function createFeishuGateway({
 
     if (reactionEmojiType) {
       try {
-        await addMessageReaction({
+        const response = await addMessageReaction({
           messageId,
           emojiType: reactionEmojiType
         })
@@ -377,7 +421,8 @@ export function createFeishuGateway({
           ok: true,
           source: 'feishu_gateway',
           message_id: messageId,
-          emoji_type: reactionEmojiType
+          emoji_type: reactionEmojiType,
+          reaction_id: response?.data?.reaction_id ?? null
         }
       } catch (reactionError) {
         if (replyText) {
@@ -534,6 +579,8 @@ export function createFeishuGateway({
     updateMessage,
     updateTextMessage,
     addMessageReaction,
+    deleteMessageReaction,
+    listMessageReactions,
     start,
     close
   }

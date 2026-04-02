@@ -11,6 +11,8 @@ function createFakeSdk({
     reply: [],
     update: [],
     reactionCreate: [],
+    reactionDelete: [],
+    reactionList: [],
     started: null,
     close: []
   }
@@ -53,7 +55,36 @@ function createFakeSdk({
               }
               return {
                 ok: true,
+                payload,
+                data: {
+                  reaction_id: 'reaction-created-1'
+                }
+              }
+            },
+            delete: async (payload) => {
+              calls.reactionDelete.push(payload)
+              return {
+                ok: true,
                 payload
+              }
+            },
+            list: async (payload) => {
+              calls.reactionList.push(payload)
+              return {
+                ok: true,
+                payload,
+                data: {
+                  items: [
+                    {
+                      reaction_id: 'reaction-listed-1',
+                      reaction_type: {
+                        emoji_type: 'SMILE'
+                      }
+                    }
+                  ],
+                  has_more: false,
+                  page_token: ''
+                }
               }
             }
           }
@@ -179,6 +210,45 @@ test('addMessageReaction adds one reaction to the incoming Feishu message', asyn
   assert.equal(calls.reactionCreate.length, 1)
   assert.equal(calls.reactionCreate[0].path.message_id, 'om_456')
   assert.equal(calls.reactionCreate[0].data.reaction_type.emoji_type, 'SMILE')
+})
+
+test('deleteMessageReaction removes one existing reaction from the incoming Feishu message', async () => {
+  const { sdk, calls } = createFakeSdk()
+  const gateway = createFeishuGateway({
+    appId: 'app-id',
+    appSecret: 'app-secret',
+    sdk
+  })
+
+  await gateway.deleteMessageReaction({
+    messageId: 'om_456',
+    reactionId: 'reaction_123'
+  })
+
+  assert.equal(calls.reactionDelete.length, 1)
+  assert.equal(calls.reactionDelete[0].path.message_id, 'om_456')
+  assert.equal(calls.reactionDelete[0].path.reaction_id, 'reaction_123')
+})
+
+test('listMessageReactions loads the current reactions for one message', async () => {
+  const { sdk, calls } = createFakeSdk()
+  const gateway = createFeishuGateway({
+    appId: 'app-id',
+    appSecret: 'app-secret',
+    sdk
+  })
+
+  const response = await gateway.listMessageReactions({
+    messageId: 'om_456',
+    reactionType: 'SMILE',
+    pageSize: 10
+  })
+
+  assert.equal(calls.reactionList.length, 1)
+  assert.equal(calls.reactionList[0].path.message_id, 'om_456')
+  assert.equal(calls.reactionList[0].params.reaction_type, 'SMILE')
+  assert.equal(calls.reactionList[0].params.page_size, 10)
+  assert.equal(response.data.items[0].reaction_id, 'reaction-listed-1')
 })
 
 test('replyInteractiveCard replies with one markdown-capable interactive card', async () => {
@@ -397,6 +467,7 @@ test('start adds an immediate reaction before dispatching the message handler', 
   assert.equal(received.message_id, 'om_reaction_first')
   assert.equal(received.immediate_ack.kind, 'reaction')
   assert.equal(received.immediate_ack.emoji_type, 'SMILE')
+  assert.equal(received.immediate_ack.reaction_id, 'reaction-created-1')
 })
 
 test('start falls back to an immediate text reply when reaction creation fails', async () => {
