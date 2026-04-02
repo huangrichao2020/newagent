@@ -56,6 +56,18 @@ async function createHarness({
         ...payload
       })
       return {
+        ok: true,
+        data: {
+          reaction_id: `${payload.messageId}:${payload.emojiType}:${replies.length}`
+        }
+      }
+    },
+    async deleteMessageReaction(payload) {
+      replies.push({
+        method: 'deleteMessageReaction',
+        ...payload
+      })
+      return {
         ok: true
       }
     },
@@ -435,6 +447,28 @@ test('handleChannelMessage creates a manager session and replies through Feishu'
   assert.ok(hooks.some((event) => event.name === 'manager.planning.completed'))
   assert.ok(hooks.some((event) => event.name === 'manager.loop.completed'))
   assert.ok(hooks.some((event) => event.name === 'channel.reply.sent'))
+})
+
+test('handleChannelMessage adds processing and completed reactions for one Feishu turn', async () => {
+  const { runtime, replies } = await createHarness()
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_reaction_lifecycle_1',
+      chat_id: 'oc_reaction_lifecycle',
+      sender_open_id: 'ou_reaction_lifecycle',
+      text: '看一下 deploy-hub 当前状态'
+    }
+  })
+
+  const reactions = replies
+    .filter((entry) => entry.method === 'addMessageReaction')
+    .map((entry) => entry.emojiType)
+
+  assert.equal(reactions[0], 'SMILE')
+  assert.ok(reactions.length >= 3)
+  assert.ok(new Set(reactions).size >= 2)
 })
 
 test('handleChannelMessage reuses one unified Feishu session and injects prior transcript into planning', async () => {
@@ -866,13 +900,13 @@ test('startFeishuLoop queues appended Feishu messages behind an active turn and 
 
   assert.equal(firstResult.session_id, secondResult.session_id)
   assert.equal(plannerCalls.length, 2)
-  assert.equal(snapshot.task.user_request, '再看 worker 状态')
+  assert.equal(snapshot.task.user_request, '补充建议：再看 worker 状态')
   assert.equal(
     snapshot.timeline.filter((event) => event.kind === 'session_turn_started').length >= 1,
     true
   )
   assert.match(plannerCalls[1].prompt, /RECENT TRANSCRIPT:/)
-  assert.match(plannerCalls[1].prompt, /先看 deploy-hub/)
+  assert.match(plannerCalls[1].prompt, /补充建议：再看 worker 状态/)
 })
 
 test('startFeishuLoop updates the Feishu reply mode through /fast and reports it via /status', async () => {
@@ -1028,6 +1062,44 @@ test('startFeishuLoop accepts /appendmsg and queues appended suggestions behind 
   assert.equal(plannerCalls.length, 2)
   assert.equal(snapshot.task.user_request, '补充建议：再看 worker 状态')
   assert.match(plannerCalls[1].prompt, /补充建议：再看 worker 状态/)
+})
+
+test('startFeishuLoop auto-appends direct follow-up cues behind the active turn and marks them queued', async () => {
+  const { runtime, feishuGateway, plannerCalls, sessionStore, replies } = await createHarness({
+    feishuAppendMergeWindowMs: 5,
+    plannerDelayMs: 30
+  })
+
+  await runtime.startFeishuLoop()
+
+  const firstResultPromise = feishuGateway.onMessage({
+    message_id: 'om_auto_append_1',
+    chat_id: 'oc_auto_append',
+    sender_open_id: 'ou_auto_append',
+    text: '先看 deploy-hub'
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 12))
+
+  const secondResultPromise = feishuGateway.onMessage({
+    message_id: 'om_auto_append_2',
+    chat_id: 'oc_auto_append',
+    sender_open_id: 'ou_auto_append',
+    text: '顺便也看一下 worker 状态'
+  })
+
+  const firstResult = await firstResultPromise
+  const secondResult = await secondResultPromise
+  const snapshot = await sessionStore.loadSession(secondResult.session_id)
+  const queuedReactions = replies.filter((entry) =>
+    entry.method === 'addMessageReaction' && entry.messageId === 'om_auto_append_2'
+  )
+
+  assert.equal(firstResult.session_id, secondResult.session_id)
+  assert.equal(plannerCalls.length, 2)
+  assert.equal(snapshot.task.user_request, '补充建议：顺便也看一下 worker 状态')
+  assert.match(plannerCalls[1].prompt, /补充建议：顺便也看一下 worker 状态/)
+  assert.ok(queuedReactions.length >= 2)
 })
 
 test('startFeishuLoop stops the active turn at the next safe point when /stop arrives', async () => {
@@ -1246,8 +1318,9 @@ test('handleChannelMessage degrades gracefully when planner fails', async () => 
   assert.equal(snapshot.plan_steps.length, 0)
   assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_plan_failed'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'session_summary_updated'))
-  assert.equal(replies.length, 2)
   assert.equal(replies[0].emojiType, 'SMILE')
+  assert.ok(replies.filter((entry) => entry.emojiType).length >= 2)
+  assert.ok(replies.some((entry) => typeof entry.text === 'string'))
 })
 
 test('handleChannelMessage sends a progress update when planning crosses the delay threshold', async () => {
@@ -1392,9 +1465,10 @@ test('handleChannelMessage short-circuits lightweight ping messages and still re
   assert.equal(result.execution, null)
   assert.equal(snapshot.session.status, 'completed')
   assert.equal(snapshot.task.status, 'completed')
-  assert.equal(replies.length, 2)
   assert.equal(replies[0].emojiType, 'SMILE')
-  assert.equal(replies[1].text, '在，有事直接说。')
+  assert.ok(replies.filter((entry) => entry.emojiType).length >= 2)
+  assert.ok(replies.filter((entry) => entry.emojiType && entry.emojiType !== 'SMILE').length >= 1)
+  assert.ok(replies.some((entry) => entry.text === '在，有事直接说。'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'manager_ping_detected'))
   assert.ok(
     snapshot.timeline.some(

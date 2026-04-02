@@ -54,6 +54,16 @@ const DEFAULT_FEISHU_OPERATOR_PROFILE = Object.freeze({
   show_command_hints: true
 })
 
+const FEISHU_STATUS_REACTIONS = Object.freeze({
+  received: 'SMILE',
+  queued: 'HOURGLASS',
+  processing: 'EYES',
+  waiting_approval: 'RAISED_HAND',
+  completed: 'WHITE_CHECK_MARK',
+  failed: 'WARNING',
+  stopped: 'NO_ENTRY_SIGN'
+})
+
 class FeishuRunStoppedError extends Error {
   constructor(stage = 'operator_stop_requested') {
     super(`Feishu run stopped: ${stage}`)
@@ -413,6 +423,59 @@ function parseFeishuControlCommand(message) {
 
 function buildFeishuAppendSuggestion(argument) {
   return `补充建议：${argument}`
+}
+
+function getFeishuStatusReaction(stage) {
+  return FEISHU_STATUS_REACTIONS[stage] ?? null
+}
+
+function looksLikeFeishuMetaFollowUp(request) {
+  return /^(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|哪里改了|做到哪了|现在呢|上面那个)/u.test(request)
+    || /(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|做到哪了|你刚刚|你上面|这个意思|这次改动|大改|进展|当前状态|现在状态|处理状态)/u.test(request)
+}
+
+function looksLikeFeishuNewTaskRequest(request) {
+  return /(帮我|麻烦|看下|看一下|看看|确认|确认下|确认一下|核对|顺手看|查下|查一下|查查|排查|继续|接着|修复|改一下|改成|部署|上线|运行|执行|测试|停掉|启动|清理|新增|加个|做个)/u.test(request)
+}
+
+function shouldAutoAppendFeishuFollowUp(message) {
+  const request = cleanText(buildOperatorRequest(message))
+
+  if (!request) {
+    return false
+  }
+
+  if (parseFeishuControlCommand(message)) {
+    return false
+  }
+
+  if (collectReferencedMessageIds(message).length > 0) {
+    return false
+  }
+
+  if (looksLikeFeishuSelfReflectionQuestion(request) || looksLikeFeishuMetaFollowUp(request)) {
+    return false
+  }
+
+  const looksLikeAppendCue = /^(再|顺便|另外|同时|然后|还有|补充|对了|顺手|别忘了|也|以及|顺带|一并|连同)/u.test(request)
+    || /(顺便|另外|补充|别忘了|也看看|也查查|也查一下|也看下|一起|一并|再把|再顺手)/u.test(request)
+
+  if (looksLikeAppendCue) {
+    return true
+  }
+
+  return request.length <= 24 && !looksLikeFeishuNewTaskRequest(request)
+}
+
+function buildAutoAppendedFeishuMessage(message) {
+  const originalText = cleanText(message?.text)
+
+  return {
+    ...message,
+    text: buildFeishuAppendSuggestion(originalText),
+    continuation_hint: 'auto_append',
+    original_text: originalText
+  }
 }
 
 function assertFeishuRunActive(runState, stage) {
@@ -1405,14 +1468,17 @@ function shouldUseFeishuConversationReply({
     return false
   }
 
+  if (request.startsWith('补充建议：') || message?.continuation_hint === 'auto_append') {
+    return false
+  }
+
   if (looksLikeFeishuSelfReflectionQuestion(request)) {
     return true
   }
 
   const looksLikeQuestion = /[?？]$/.test(request)
-  const looksLikeMetaFollowUp = /^(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|哪里改了|做到哪了|现在呢|上面那个)/u.test(request)
-    || /(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|做到哪了|你刚刚|你上面|这个意思|这次改动|大改)/u.test(request)
-  const looksLikeNewTask = /(帮我|麻烦|看下|看一下|看看|确认|确认下|确认一下|核对|顺手看|查下|查一下|查查|排查|继续|接着|修复|改一下|改成|部署|上线|运行|执行|测试|停掉|启动|清理|新增|加个|做个)/u.test(request)
+  const looksLikeMetaFollowUp = looksLikeFeishuMetaFollowUp(request)
+  const looksLikeNewTask = looksLikeFeishuNewTaskRequest(request)
 
   if (attentionContext.primary_reference) {
     return !looksLikeNewTask || looksLikeQuestion || looksLikeMetaFollowUp
@@ -1576,6 +1642,7 @@ export function createServerManagerRuntime({
   const feishuRuntimeState = {
     active_run: null
   }
+  const feishuReactionStateByMessageId = new Map()
 
   function nowIso() {
     return new Date(nowFn()).toISOString()
@@ -1609,6 +1676,22 @@ export function createServerManagerRuntime({
     }
 
     return null
+  }
+
+  function rememberFeishuImmediateAckReactions(messages = []) {
+    for (const item of messages) {
+      if (
+        item?.message_id
+        && item?.immediate_ack?.kind === 'reaction'
+        && item.immediate_ack.ok
+      ) {
+        feishuReactionStateByMessageId.set(item.message_id, {
+          stage: 'received',
+          emoji_type: item.immediate_ack.emoji_type ?? null,
+          reaction_id: item.immediate_ack.reaction_id ?? null
+        })
+      }
+    }
   }
 
   function buildMergedFeishuMessage(messages = []) {
@@ -2964,7 +3047,7 @@ export function createServerManagerRuntime({
     const immediateAck = buildImmediateFeishuAck()
 
     try {
-      await feishuGateway.addMessageReaction({
+      const response = await feishuGateway.addMessageReaction({
         messageId,
         emojiType: immediateReaction
       })
@@ -2974,7 +3057,8 @@ export function createServerManagerRuntime({
         ok: true,
         source: 'server_manager_runtime',
         message_id: messageId,
-        emoji_type: immediateReaction
+        emoji_type: immediateReaction,
+        reaction_id: response?.data?.reaction_id ?? null
       }
     } catch (error) {
       try {
@@ -3005,18 +3089,145 @@ export function createServerManagerRuntime({
     }
   }
 
+  async function addFeishuStatusReaction({
+    sessionId = null,
+    messageId,
+    stage,
+    source = 'server_manager_runtime'
+  }) {
+    const emojiType = getFeishuStatusReaction(stage)
+    const existing = messageId
+      ? feishuReactionStateByMessageId.get(messageId) ?? null
+      : null
+
+    if (!feishuGateway || !messageId || !emojiType) {
+      return {
+        ok: false,
+        skipped: true,
+        message_id: messageId ?? null,
+        stage
+      }
+    }
+
+    if (existing?.stage === stage && existing?.emoji_type === emojiType) {
+      return {
+        ok: true,
+        skipped: true,
+        message_id: messageId,
+        emoji_type: emojiType,
+        reaction_id: existing.reaction_id ?? null,
+        stage
+      }
+    }
+
+    try {
+      if (
+        existing?.reaction_id
+        && typeof feishuGateway.deleteMessageReaction === 'function'
+      ) {
+        try {
+          await feishuGateway.deleteMessageReaction({
+            messageId,
+            reactionId: existing.reaction_id
+          })
+        } catch {}
+      }
+
+      const response = await feishuGateway.addMessageReaction({
+        messageId,
+        emojiType
+      })
+      const reactionId = response?.data?.reaction_id ?? null
+      feishuReactionStateByMessageId.set(messageId, {
+        stage,
+        emoji_type: emojiType,
+        reaction_id: reactionId
+      })
+
+      if (sessionId) {
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'assistant_reaction_added',
+          actor: 'assistant:manager',
+          payload: {
+            message_id: messageId,
+            emoji_type: emojiType,
+            reaction_id: reactionId,
+            stage,
+            source
+          }
+        })
+      }
+
+      return {
+        ok: true,
+        message_id: messageId,
+        emoji_type: emojiType,
+        reaction_id: reactionId,
+        stage
+      }
+    } catch (error) {
+      if (sessionId) {
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'channel_reply_failed',
+          actor: 'assistant:manager',
+          payload: {
+            stage: `reaction_${stage}`,
+            message_id: messageId,
+            reaction_error: error.message,
+            source
+          }
+        })
+      }
+
+      return {
+        ok: false,
+        message_id: messageId,
+        emoji_type: emojiType,
+        stage,
+        reaction_error: error.message
+      }
+    }
+  }
+
+  async function addFeishuStatusReactionToMessages({
+    sessionId = null,
+    messages = [],
+    stage,
+    source = 'server_manager_runtime'
+  }) {
+    const messageIds = uniqueStringValues(messages.map((item) => item?.message_id))
+
+    for (const messageId of messageIds) {
+      await addFeishuStatusReaction({
+        sessionId,
+        messageId,
+        stage,
+        source
+      })
+    }
+  }
+
   async function appendImmediateAckTimelineEvent(sessionId, immediateAck) {
     if (!immediateAck) {
       return
     }
 
     if (immediateAck.kind === 'reaction' && immediateAck.ok) {
+      if (immediateAck.message_id) {
+        feishuReactionStateByMessageId.set(immediateAck.message_id, {
+          stage: 'received',
+          emoji_type: immediateAck.emoji_type ?? null,
+          reaction_id: immediateAck.reaction_id ?? null
+        })
+      }
+
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'assistant_reaction_added',
         actor: 'assistant:manager',
         payload: {
           message_id: immediateAck.message_id ?? null,
           emoji_type: immediateAck.emoji_type ?? null,
+          reaction_id: immediateAck.reaction_id ?? null,
           source: immediateAck.source ?? null
         }
       })
@@ -3029,6 +3240,7 @@ export function createServerManagerRuntime({
           kind: 'reaction',
           message_id: immediateAck.message_id ?? null,
           emoji_type: immediateAck.emoji_type ?? null,
+          reaction_id: immediateAck.reaction_id ?? null,
           source: immediateAck.source ?? null
         }
       })
@@ -4297,6 +4509,9 @@ export function createServerManagerRuntime({
       }
 
       const channelMessages = listOperatorMessages(message)
+      if (channel === 'feishu') {
+        rememberFeishuImmediateAckReactions(channelMessages)
+      }
 
       for (const [index, channelMessage] of channelMessages.entries()) {
         await sessionStore.appendTimelineEvent(sessionId, {
@@ -4345,6 +4560,14 @@ export function createServerManagerRuntime({
         immediateAck
       ) {
         await appendImmediateAckTimelineEvent(sessionId, immediateAck)
+      }
+
+      if (shouldReply && channel === 'feishu') {
+        await addFeishuStatusReactionToMessages({
+          sessionId,
+          messages: channelMessages,
+          stage: 'processing'
+        })
       }
 
       progressNotifier = shouldReply
@@ -4659,6 +4882,18 @@ export function createServerManagerRuntime({
         (message.message_id || message.chat_id) &&
         !suppressFinalReply
       ) {
+        const finalReactionStage = finalReplyError
+          ? 'failed'
+          : execution?.status === 'waiting_approval'
+            ? 'waiting_approval'
+            : 'completed'
+
+        await addFeishuStatusReactionToMessages({
+          sessionId,
+          messages: channelMessages,
+          stage: finalReactionStage
+        })
+
         const finalText = buildFeishuFinalReplyText({
           operatorProfile,
           planning,
@@ -4718,6 +4953,14 @@ export function createServerManagerRuntime({
         stopped: suppressFinalReply
       }
     } finally {
+      if (suppressFinalReply && sessionId && channel === 'feishu') {
+        await addFeishuStatusReactionToMessages({
+          sessionId,
+          messages: listOperatorMessages(message),
+          stage: 'stopped'
+        })
+      }
+
       if (feishuRuntimeState.active_run === feishuRunState) {
         feishuRuntimeState.active_run = null
       }
@@ -4762,9 +5005,23 @@ export function createServerManagerRuntime({
           return commandResult
         }
 
+        const normalizedMessage = feishuRuntimeState.active_run && shouldAutoAppendFeishuFollowUp(message)
+          ? buildAutoAppendedFeishuMessage(message)
+          : message
+        rememberFeishuImmediateAckReactions([normalizedMessage])
+
+        if (feishuRuntimeState.active_run?.session_id && normalizedMessage.message_id) {
+          await addFeishuStatusReaction({
+            sessionId: feishuRuntimeState.active_run.session_id,
+            messageId: normalizedMessage.message_id,
+            stage: 'queued',
+            source: 'feishu_inbound_queue'
+          })
+        }
+
         return new Promise((resolve, reject) => {
           enqueueFeishuMessage({
-            message,
+            message: normalizedMessage,
             options: {
               autoReply,
               autoPlan,

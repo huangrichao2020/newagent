@@ -31,6 +31,27 @@ test('recordRequest stores one received coworker request locally', async () => {
   assert.equal(record.local_status, 'received')
 })
 
+test('getRecord and getLatestRecord can load the newest local inbox request', async () => {
+  const { inbox } = await createHarness()
+  await inbox.recordRequest({
+    id: 'request-older',
+    target: 'codex_mac_local',
+    question: '先看旧的。'
+  })
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  await inbox.recordRequest({
+    id: 'request-latest',
+    target: 'codex_mac_local',
+    question: '再看新的。'
+  })
+
+  const loaded = await inbox.getRecord('request-older')
+  const latest = await inbox.getLatestRecord()
+
+  assert.equal(loaded?.id, 'request-older')
+  assert.equal(latest?.id, 'request-latest')
+})
+
 test('markReplied updates one local inbox record after a remote reply is sent', async () => {
   const { inbox } = await createHarness()
 
@@ -75,4 +96,19 @@ test('listRecords can filter local inbox records by status', async () => {
   assert.equal(received[0].id, 'request-3')
   assert.equal(replied.length, 1)
   assert.equal(replied[0].id, 'request-4')
+})
+
+test('markNotified stores local notification delivery metadata', async () => {
+  const { inbox } = await createHarness()
+  await inbox.recordRequest({
+    id: 'request-5',
+    target: 'codex_mac_local',
+    question: '请确认桌面提醒。'
+  })
+
+  const updated = await inbox.markNotified('request-5')
+
+  assert.equal(updated.local_notification_status, 'delivered')
+  assert.ok(updated.local_notified_at)
+  assert.equal(updated.local_notification_error, null)
 })

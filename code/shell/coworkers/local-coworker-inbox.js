@@ -67,6 +67,27 @@ export function createLocalCoworkerInbox({
     return record
   }
 
+  async function getRecord(requestId) {
+    const normalizedRequestId = cleanText(requestId)
+
+    if (!normalizedRequestId) {
+      throw new Error('Missing required request id')
+    }
+
+    return safeReadJson(getRecordPath(normalizedRequestId))
+  }
+
+  async function getLatestRecord({
+    localStatus = null
+  } = {}) {
+    const records = await listRecords({
+      localStatus,
+      limit: 1
+    })
+
+    return records.at(-1) ?? null
+  }
+
   async function markReplied(requestId, {
     answer
   }) {
@@ -87,6 +108,35 @@ export function createLocalCoworkerInbox({
       local_status: 'replied',
       local_answer: cleanText(answer) || null,
       local_replied_at: nowIso(),
+      synced_at: nowIso(),
+      version: 1
+    }
+
+    await writeJsonAtomic(getRecordPath(normalizedRequestId), record)
+    return record
+  }
+
+  async function markNotified(requestId, {
+    delivered = true,
+    error = null
+  } = {}) {
+    const normalizedRequestId = cleanText(requestId)
+
+    if (!normalizedRequestId) {
+      throw new Error('Missing required request id')
+    }
+
+    const existing = await safeReadJson(getRecordPath(normalizedRequestId))
+
+    if (!existing) {
+      throw new Error(`Unknown local coworker inbox record: ${normalizedRequestId}`)
+    }
+
+    const record = {
+      ...existing,
+      local_notified_at: nowIso(),
+      local_notification_status: delivered ? 'delivered' : 'failed',
+      local_notification_error: cleanText(error) || null,
       synced_at: nowIso(),
       version: 1
     }
@@ -116,7 +166,10 @@ export function createLocalCoworkerInbox({
   }
 
   return {
+    getLatestRecord,
+    getRecord,
     listRecords,
+    markNotified,
     markReplied,
     recordRequest
   }

@@ -2,12 +2,13 @@
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { createLocalCoworkerInbox } from '../shell/coworkers/local-coworker-inbox.js'
+import { createCoworkerNotifier } from '../shell/coworkers/coworker-notifier.js'
 import { createRemoteCoworkerClient } from '../shell/coworkers/remote-coworker-client.js'
 
 function parseArgs(argv) {
   const args = [...argv]
   const commandTokens = []
-  const booleanOptions = new Set(['json', 'once'])
+  const booleanOptions = new Set(['json', 'notify', 'once', 'no-notify'])
 
   while (args[0] && !args[0].startsWith('--')) {
     commandTokens.push(args.shift())
@@ -60,6 +61,16 @@ function formatOutput(payload, asJson) {
     return `${JSON.stringify(payload, null, 2)}\n`
   }
 
+  if (payload.record) {
+    return [
+      `request_id: ${payload.record.id}`,
+      `local_status: ${payload.record.local_status ?? 'received'}`,
+      `status: ${payload.record.status ?? 'unknown'}`,
+      `title: ${payload.record.title ?? 'null'}`,
+      `question: ${payload.record.question ?? 'null'}`
+    ].join('\n') + '\n'
+  }
+
   if (payload.request) {
     return [
       `request_id: ${payload.request.id}`,
@@ -92,6 +103,9 @@ async function main() {
   const inbox = createLocalCoworkerInbox({
     inboxRoot
   })
+  const notifier = createCoworkerNotifier({
+    enabled: options.notify === true || (options.once !== true && options['no-notify'] !== true)
+  })
   const remoteClient = createRemoteCoworkerClient({
     remoteHost: options['remote-host'] ?? 'aliyun',
     remoteRepoRoot: options['remote-repo-root'] ?? '/root/newagent/code',
@@ -115,6 +129,19 @@ async function main() {
 
       if (payload.request) {
         const record = await inbox.recordRequest(payload.request)
+        try {
+          const notification = await notifier.notifyRequest(payload.request)
+
+          if (notification.delivered) {
+            await inbox.markNotified(payload.request.id)
+          }
+        } catch (error) {
+          await inbox.markNotified(payload.request.id, {
+            delivered: false,
+            error: error.message
+          })
+        }
+
         process.stdout.write(formatOutput({
           command: 'listen',
           timed_out: false,
@@ -162,6 +189,61 @@ async function main() {
     process.stdout.write(formatOutput({
       command: 'list',
       records
+    }, asJson))
+    return
+  }
+
+  if (command === 'get') {
+    const record = await inbox.getRecord(requireOption(options, 'request-id'))
+
+    if (!record) {
+      throw new Error(`Unknown local coworker inbox record: ${options['request-id']}`)
+    }
+
+    process.stdout.write(formatOutput({
+      command: 'get',
+      record
+    }, asJson))
+    return
+  }
+
+  if (command === 'latest') {
+    const record = await inbox.getLatestRecord({
+      localStatus: options.status ?? null
+    })
+
+    process.stdout.write(formatOutput({
+      command: 'latest',
+      record
+    }, asJson))
+    return
+  }
+
+  if (command === 'reply-latest') {
+    const answer = requireOption(options, 'answer')
+    const record = await inbox.getLatestRecord({
+      localStatus: options.status ?? 'received'
+    })
+
+    if (!record) {
+      throw new Error('No matching local coworker inbox record to reply to')
+    }
+
+    const payload = await remoteClient.replyToRequest({
+      requestId: record.id,
+      answer,
+      resolvedBy: options['resolved-by'] ?? 'codex_mac_local',
+      location: options.location ?? 'mac_local_codex'
+    })
+
+    await inbox.recordRequest(payload.request)
+    await inbox.markReplied(payload.request.id, {
+      answer: payload.request.answer
+    })
+    process.stdout.write(formatOutput({
+      command: 'reply-latest',
+      request: payload.request,
+      record: await inbox.getRecord(payload.request.id)
     }, asJson))
     return
   }
