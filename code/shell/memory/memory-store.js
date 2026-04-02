@@ -1,174 +1,235 @@
+/**
+ * 记忆存储 - 双轨制设计
+ * 1. 主 Agent 主动保存 (feedback_rule)
+ * 2. 后台 Agent 自动提取 (confirmation_signal)
+ * 互斥机制：主 Agent 写了，后台就不写
+ */
+
+import { mkdir, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { appendJsonLine, readJsonLines } from '../../storage/json-files.js'
-import { createSessionStore, createUlid } from '../session/session-store.js'
+import { readJson, writeJsonAtomic, appendJsonLine } from '../../storage/json-files.js'
+import { createUlid } from '../session/session-store.js'
 
 function nowIso() {
   return new Date().toISOString()
 }
 
-async function safeReadJsonLines(filePath) {
-  try {
-    return await readJsonLines(filePath)
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return []
-    }
-
-    throw error
-  }
+function cleanText(value) {
+  return String(value ?? '').trim()
 }
 
-function matchesSearch(entry, { query, tag, activeOnly }) {
-  if (activeOnly && entry.status !== 'active') {
-    return false
-  }
-
-  if (tag && !Array.isArray(entry.tags)) {
-    return false
-  }
-
-  if (tag && !entry.tags.includes(tag)) {
-    return false
-  }
-
-  if (!query) {
-    return true
-  }
-
-  const haystack = [
-    entry.content,
-    ...(entry.tags ?? []),
-    entry.kind
-  ]
-    .filter(Boolean)
-    .join(' ')
+function normalizeForSignalMatch(text) {
+  return String(text ?? '')
     .toLowerCase()
-
-  return haystack.includes(query.toLowerCase())
+    .replace(/[,.!?;:，。！？；：]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
+
+const CONFIRMATION_SIGNALS = [
+  '好的',
+  '好的',
+  '收到',
+  '明白',
+  '没问题',
+  '可以',
+  '行',
+  '行的',
+  '就这样',
+  '就这样吧',
+  '按这个来',
+  '按这个做',
+  '继续',
+  '继续吧',
+  'yes',
+  'perfect',
+  'exactly',
+  'keep doing that',
+  'keep it up',
+  'good',
+  'great',
+  'excellent',
+  '正确',
+  '对的',
+  '没错',
+  '是这个意思',
+  '理解了',
+  '知道了'
+]
+
+const NEGATIVE_CONFIRMATION_SIGNALS = [
+  '不',
+  '不用',
+  '先别',
+  '别继续',
+  '暂停',
+  '先暂停',
+  '停',
+  '停止',
+  'stop',
+  'no',
+  '不用继续',
+  '先停下',
+  '先别继续',
+  '不要继续',
+  '不对',
+  '错了',
+  '不是这个意思',
+  '重新来'
+]
 
 export function createMemoryStore({ storageRoot }) {
-  const sessionStore = createSessionStore({ storageRoot })
+  const memoryRoot = join(storageRoot, 'memory')
+  const entriesRoot = join(memoryRoot, 'entries')
 
-  async function resolveScopePath({ sessionId, scope }) {
-    const snapshot = await sessionStore.loadSession(sessionId)
-
-    if (scope === 'session') {
-      return {
-        filePath: join(storageRoot, 'memory', 'session', `${sessionId}.jsonl`),
-        projectKey: snapshot.session.project_key
-      }
-    }
-
-    if (scope === 'project') {
-      return {
-        filePath: join(
-          storageRoot,
-          'memory',
-          'project',
-          `${snapshot.session.project_key}.jsonl`
-        ),
-        projectKey: snapshot.session.project_key
-      }
-    }
-
-    throw new Error(`Unsupported memory scope: ${scope}`)
+  function getMemoryFilePath(sessionId) {
+    return join(entriesRoot, `${sessionId}.jsonl`)
   }
 
-  async function addMemoryEntry({
-    sessionId,
-    scope,
-    kind,
-    content,
-    tags = [],
-    status = 'active',
-    supersedesId = null
-  }) {
-    if (!sessionId) {
-      throw new Error('Missing required field: sessionId')
+  async function ensureMemoryFile(sessionId) {
+    await mkdir(entriesRoot, { recursive: true })
+    const filePath = getMemoryFilePath(sessionId)
+    try {
+      await readJson(filePath)
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        await writeJsonAtomic(filePath, [])
+      } else {
+        throw error
+      }
     }
+    return filePath
+  }
 
-    if (!scope) {
-      throw new Error('Missing required field: scope')
-    }
-
-    if (!kind) {
-      throw new Error('Missing required field: kind')
-    }
-
-    if (!content) {
-      throw new Error('Missing required field: content')
-    }
-
-    const createdAt = nowIso()
-    const { filePath, projectKey } = await resolveScopePath({
-      sessionId,
-      scope
-    })
+  async function createMemoryEntry(sessionId, entryInput) {
+    const filePath = await ensureMemoryFile(sessionId)
     const entry = {
       id: createUlid(),
-      scope,
-      session_id: scope === 'session' ? sessionId : null,
-      project_key: projectKey,
-      kind,
-      status,
-      content,
-      tags,
-      source_event_id: null,
-      supersedes_id: supersedesId,
-      created_at: createdAt,
-      updated_at: createdAt,
+      session_id: sessionId,
+      content: cleanText(entryInput.content),
+      kind: entryInput.kind || 'general',
+      tag: entryInput.tag || null,
+      scope: entryInput.scope || 'session',
+      priority: entryInput.priority || 'normal',
+      confirmed_at: entryInput.confirmed_at || null,
+      created_at: nowIso(),
       version: 1
     }
 
     await appendJsonLine(filePath, entry)
-    const event = await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'memory_written',
-      payload: {
-        memory_id: entry.id,
-        scope: entry.scope,
-        kind: entry.kind
-      }
-    })
-
-    return {
-      ...entry,
-      source_event_id: event.id
-    }
+    return entry
   }
 
   async function searchMemoryEntries({
     sessionId,
-    scope,
-    query = '',
+    scope = null,
     tag = null,
-    activeOnly = true
-  }) {
-    if (!sessionId) {
-      throw new Error('Missing required field: sessionId')
+    kind = null,
+    limit = 50
+  } = {}) {
+    const filePath = getMemoryFilePath(sessionId)
+    try {
+      const content = await readJson(filePath)
+      const entries = Array.isArray(content) ? content : []
+
+      return entries
+        .filter((entry) => !scope || entry.scope === scope)
+        .filter((entry) => !tag || entry.tag === tag)
+        .filter((entry) => !kind || entry.kind === kind)
+        .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+        .slice(0, limit)
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return []
+      }
+      throw error
     }
+  }
 
-    if (!scope) {
-      throw new Error('Missing required field: scope')
-    }
+  async function hasMemoryWritesSince(sessionId, sinceTimestamp) {
+    const filePath = getMemoryFilePath(sessionId)
+    try {
+      const content = await readJson(filePath)
+      const entries = Array.isArray(content) ? content : []
 
-    const { filePath } = await resolveScopePath({
-      sessionId,
-      scope
-    })
-    const entries = await safeReadJsonLines(filePath)
-
-    return entries.filter((entry) =>
-      matchesSearch(entry, {
-        query,
-        tag,
-        activeOnly
+      return entries.some((entry) => {
+        const entryTime = new Date(entry.created_at).getTime()
+        return entryTime > sinceTimestamp
       })
-    )
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return false
+      }
+      throw error
+    }
+  }
+
+  async function isConfirmationSignal(text) {
+    const normalized = normalizeForSignalMatch(text)
+
+    for (const signal of CONFIRMATION_SIGNALS) {
+      if (normalized.includes(signal.toLowerCase())) {
+        return {
+          isConfirmation: true,
+          isNegative: false,
+          signal
+        }
+      }
+    }
+
+    for (const signal of NEGATIVE_CONFIRMATION_SIGNALS) {
+      if (normalized.includes(signal.toLowerCase())) {
+        return {
+          isConfirmation: true,
+          isNegative: true,
+          signal
+        }
+      }
+    }
+
+    return {
+      isConfirmation: false,
+      isNegative: false,
+      signal: null
+    }
+  }
+
+  async function extractConfirmationSignal(message, context = {}) {
+    const text = cleanText(message?.text || '')
+    const analysis = await isConfirmationSignal(text)
+
+    if (!analysis.isConfirmation) {
+      return null
+    }
+
+    return {
+      type: analysis.isNegative ? 'negative_confirmation' : 'positive_confirmation',
+      signal: analysis.signal,
+      original_text: text,
+      extracted_at: nowIso(),
+      context: {
+        session_id: context.sessionId || null,
+        task_id: context.taskId || null,
+        last_action: context.lastAction || null
+      }
+    }
   }
 
   return {
-    addMemoryEntry,
-    searchMemoryEntries
+    createMemoryEntry,
+    searchMemoryEntries,
+    hasMemoryWritesSince,
+    isConfirmationSignal,
+    extractConfirmationSignal,
+    getMemoryFile: getMemoryFilePath,
+    clearMemories: async (sessionId) => {
+      const filePath = getMemoryFilePath(sessionId)
+      try {
+        await rm(filePath, { force: true })
+        return { success: true }
+      } catch (error) {
+        return { success: false, error: error.message }
+      }
+    }
   }
 }
