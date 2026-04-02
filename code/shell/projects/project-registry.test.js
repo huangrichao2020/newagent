@@ -72,6 +72,7 @@ test('remote manager profile pins the intended channels and model routing', asyn
   assert.equal(profile.model_routing.planner.provider, 'bailian')
   assert.equal(profile.model_routing.planner.model, 'codingplan')
   assert.equal(profile.model_routing.execution.model, 'qwen3.5-plus')
+  assert.equal(profile.external_review.enabled, false)
   assert.equal(profile.codex_integration.allow_review, true)
   assert.equal(profile.codex_integration.allow_repair, true)
 })
@@ -85,4 +86,23 @@ test('remote manager profile can disable Codex integration through env flags', a
 
   assert.equal(profile.codex_integration.allow_review, false)
   assert.equal(profile.codex_integration.allow_repair, false)
+})
+
+test('remote manager profile can enable OpenRouter external review without storing secrets in repo config', async () => {
+  const profile = createRemoteServerManagerProfile({
+    env: {
+      NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
+      NEWAGENT_EXTERNAL_REVIEW_MODEL: 'stepfun/step-3.5-flash:free',
+      NEWAGENT_OPENROUTER_SITE_URL: 'https://newagent.local'
+    }
+  })
+
+  assert.equal(profile.external_review.enabled, true)
+  assert.equal(profile.external_review.enforcing, false)
+  assert.equal(profile.model_routing.evaluation.provider, 'openrouter')
+  assert.equal(profile.model_routing.evaluation.model, 'stepfun/step-3.5-flash:free')
+  assert.equal(
+    profile.model_routing.evaluation.extra_headers['HTTP-Referer'],
+    'https://newagent.local'
+  )
 })

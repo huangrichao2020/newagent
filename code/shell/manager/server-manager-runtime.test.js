@@ -11,7 +11,14 @@ import { createHookBus } from '../hooks/hook-bus.js'
 import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
 
 async function createHarness({
-  nowFn = Date.now
+  nowFn = Date.now,
+  enableExternalReview = false,
+  evaluationResponse = {
+    verdict: 'pass',
+    summary: '外部复核通过。',
+    issues: [],
+    constraints: []
+  }
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-'))
   const storageRoot = join(root, 'storage')
@@ -19,9 +26,15 @@ async function createHarness({
   const replies = []
   const plannerCalls = []
   const summaryCalls = []
+  const evaluationCalls = []
   const providerCalls = []
   const managerProfile = createRemoteServerManagerProfile({
-    env: {}
+    env: enableExternalReview
+      ? {
+          NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
+          NEWAGENT_EXTERNAL_REVIEW_MODEL: 'stepfun/step-3.5-flash:free'
+        }
+      : {}
   })
   const feishuGateway = {
     startOptions: null,
@@ -51,6 +64,7 @@ async function createHarness({
     replies,
     plannerCalls,
     summaryCalls,
+    evaluationCalls,
     providerCalls,
     feishuGateway,
     runtime: createServerManagerRuntime({
@@ -70,6 +84,30 @@ async function createHarness({
       bailianProvider: {
         async invokeByIntent(input) {
           providerCalls.push(input)
+
+          if (input.intent === 'evaluate') {
+            evaluationCalls.push(input)
+
+            return {
+              route: {
+                provider: 'openrouter',
+                model: 'stepfun/step-3.5-flash:free'
+              },
+              request: {
+                base_url: 'https://openrouter.ai/api/v1',
+                model: 'stepfun/step-3.5-flash:free'
+              },
+              response: {
+                id: 'chatcmpl-manager-evaluate',
+                model: 'stepfun/step-3.5-flash:free',
+                finish_reason: 'stop',
+                usage: {
+                  total_tokens: 88
+                },
+                content: JSON.stringify(evaluationResponse)
+              }
+            }
+          }
 
           if (input.intent === 'summarize') {
             summaryCalls.push(input)
@@ -239,6 +277,72 @@ test('handleChannelMessage reuses one unified Feishu session and injects prior t
   assert.match(plannerCalls[1].prompt, /先看看 deploy-hub 最近有没有异常/)
 })
 
+test('handleChannelMessage records positive confirmation signals as reusable memory', async () => {
+  const { runtime, memoryStore } = await createHarness()
+
+  await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_confirm_1',
+      chat_id: 'oc_confirm',
+      sender_open_id: 'ou_confirm',
+      text: '先看看 deploy-hub 最近有没有异常'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const second = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_confirm_2',
+      chat_id: 'oc_confirm',
+      sender_open_id: 'ou_confirm',
+      text: '就这样'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const confirmationSignals = await memoryStore.searchMemoryEntries({
+    sessionId: second.session_id,
+    scope: 'project',
+    tag: 'confirmation_signal'
+  })
+
+  assert.equal(confirmationSignals.length, 1)
+  assert.match(confirmationSignals[0].content, /用户确认上一轮有效做法可继续沿用/)
+})
+
+test('handleChannelMessage can use external review as a second judge before auto execution', async () => {
+  const { runtime, memoryStore, evaluationCalls } = await createHarness({
+    enableExternalReview: true,
+    evaluationResponse: {
+      verdict: 'block',
+      summary: '外部复核认为当前计划还缺少上一轮承接。',
+      issues: ['缺少上一轮未完成事项的显式承接'],
+      constraints: ['外部复核要求先明确上一轮未完成事项，再自动推进。']
+    }
+  })
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_eval_block',
+      chat_id: 'oc_eval_block',
+      sender_open_id: 'ou_eval_block',
+      text: '继续刚才那个 deploy 问题'
+    }
+  })
+  const qualityConstraints = await memoryStore.searchMemoryEntries({
+    sessionId: result.session_id,
+    scope: 'session',
+    tag: 'quality_constraint'
+  })
+
+  assert.equal(result.execution, null)
+  assert.match(result.ack_text, /外部复核提示/)
+  assert.match(result.ack_text, /暂不自动推进/)
+  assert.equal(qualityConstraints.length, 1)
+  assert.equal(evaluationCalls.length, 1)
+  assert.match(evaluationCalls[0].prompt, /CANDIDATE PLAN:/)
+})
+
 test('handleChannelMessage compacts Feishu context after the five-hour interval and stores long-term memory', async () => {
   let currentTime = Date.now()
   const { runtime, sessionStore, memoryStore, summaryCalls, plannerCalls, hookBus } = await createHarness({
@@ -288,6 +392,37 @@ test('handleChannelMessage compacts Feishu context after the five-hour interval 
   assert.match(summaryCalls[0].prompt, /先排查一下 deploy-hub 和 uwillberich/)
   assert.match(plannerCalls[1].prompt, /LONG-TERM MEMORY:/)
   assert.match(plannerCalls[1].prompt, /累计来看/)
+})
+
+test('runFeishuMaintenanceOnce compacts due Feishu context in the background loop', async () => {
+  let currentTime = Date.now()
+  const { runtime, memoryStore, summaryCalls } = await createHarness({
+    nowFn: () => currentTime
+  })
+
+  const first = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_maintenance_1',
+      chat_id: 'oc_maintenance',
+      sender_open_id: 'ou_maintenance',
+      text: '先检查 deploy-hub 最近的发布情况'
+    },
+    autoExecuteSafeInspect: false
+  })
+
+  currentTime += 6 * 60 * 60 * 1000
+
+  const maintenance = await runtime.runFeishuMaintenanceOnce()
+  const compactedEntries = await memoryStore.searchMemoryEntries({
+    sessionId: first.session_id,
+    scope: 'session',
+    tag: 'context_compaction'
+  })
+
+  assert.equal(maintenance.status, 'compacted')
+  assert.equal(summaryCalls.length, 1)
+  assert.equal(compactedEntries.length, 1)
 })
 
 test('handleChannelMessage surfaces approval pause when repair enters the loop', async () => {
@@ -393,6 +528,7 @@ test('startFeishuLoop bootstraps projects and registers the Feishu onMessage han
 
   assert.equal(result.bootstrap.seeded_project_count, 6)
   assert.equal(result.channel_state.started, true)
+  assert.equal(result.maintenance_state.started, true)
   assert.equal(typeof feishuGateway.onMessage, 'function')
   assert.equal(feishuGateway.startOptions.immediateReactionEmojiType, 'SMILE')
   assert.equal(feishuGateway.startOptions.immediateReplyText, '已读喵，我在看啦。')

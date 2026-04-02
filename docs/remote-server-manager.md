@@ -20,7 +20,8 @@
 - 规划：百炼 `codingplan`
 - 执行：百炼 `qwen3.5-plus`
 - 总结：百炼 `qwen3.5-plus`
-- 审核与纠错：`codex`
+- 外部复核与约束提炼：OpenRouter 免费模型，默认 `stepfun/step-3.5-flash:free`
+- `codex` review / repair：适配保留，但远端默认关闭
 
 ## Managed Objects
 
@@ -79,11 +80,14 @@ M1 先做这几件事：
 - 载入远端 6 项目基线
 - 用飞书长连接收消息
 - 飞书通道固定复用一个总管会话
+- 用户确认“就这样 / 继续 / 按这个来”会沉淀成长期偏好记忆
 - 把最近几轮对话和长期压缩记忆带进后续规划
-- 每 5 小时自动压缩一次飞书上下文
+- 后台维护循环会巡检统一会话，并在每 5 小时间隔到点后自动压缩飞书上下文
+- 前台记忆写入和后台压缩有互斥锁与 trailing run，避免并发重复提取
 - 调 `codingplan` 生成 JSON 计划
 - 把计划落成 `plan_steps`
 - 把摘要和 assistant reply 记入 timeline
+- 计划结果和压缩结果都可以走第二模型复核，并把可复用约束写回 session memory
 - 用飞书回一版中文确认摘要
 - 通过安全工具读取项目注册表和探活服务端点
 - 在 runtime 内自动推进第一版 manager loop

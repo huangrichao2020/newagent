@@ -18,6 +18,18 @@ function readBooleanEnv(env, name, fallback) {
   return fallback
 }
 
+function readStringEnv(env, name, fallback = null) {
+  const rawValue = env?.[name]
+
+  if (rawValue === undefined || rawValue === null) {
+    return fallback
+  }
+
+  const normalized = String(rawValue).trim()
+
+  return normalized === '' ? fallback : normalized
+}
+
 export function createRemoteServerManagerProfile({
   env = process.env
 } = {}) {
@@ -28,6 +40,17 @@ export function createRemoteServerManagerProfile({
   const allowRepair = disableCodex
     ? false
     : readBooleanEnv(env, 'NEWAGENT_ENABLE_CODEX_REPAIR', true)
+  const enableExternalReview = readBooleanEnv(env, 'NEWAGENT_ENABLE_EXTERNAL_REVIEW', false)
+  const enforceExternalReview = enableExternalReview
+    ? readBooleanEnv(env, 'NEWAGENT_ENFORCE_EXTERNAL_REVIEW', false)
+    : false
+  const externalReviewModel = readStringEnv(
+    env,
+    'NEWAGENT_EXTERNAL_REVIEW_MODEL',
+    'stepfun/step-3.5-flash:free'
+  )
+  const openrouterSiteUrl = readStringEnv(env, 'NEWAGENT_OPENROUTER_SITE_URL', null)
+  const openrouterAppName = readStringEnv(env, 'NEWAGENT_OPENROUTER_APP_NAME', 'newagent')
 
   return {
     agent_key: 'remote-server-manager',
@@ -68,7 +91,24 @@ export function createRemoteServerManagerProfile({
         fallback_api_key_envs: ['DASHSCOPE_API_KEY', 'MODELSTUDIO_API_KEY'],
         base_url_env: 'NEWAGENT_BAILIAN_SUMMARIZATION_BASE_URL',
         base_url_default: 'https://coding.dashscope.aliyuncs.com/v1'
+      },
+      evaluation: {
+        provider: 'openrouter',
+        model: externalReviewModel,
+        api_key_env: 'OPENROUTER_API_KEY',
+        fallback_api_key_envs: ['NEWAGENT_OPENROUTER_API_KEY'],
+        base_url_env: 'NEWAGENT_OPENROUTER_BASE_URL',
+        base_url_default: 'https://openrouter.ai/api/v1',
+        extra_headers: {
+          'HTTP-Referer': openrouterSiteUrl,
+          'X-OpenRouter-Title': openrouterAppName
+        }
       }
+    },
+    external_review: {
+      enabled: enableExternalReview,
+      enforcing: enforceExternalReview,
+      model: externalReviewModel
     },
     codex_integration: {
       allow_review: allowReview,

@@ -27,6 +27,12 @@
 - `NEWAGENT_BAILIAN_PLANNER_BASE_URL`
 - `NEWAGENT_BAILIAN_EXECUTION_BASE_URL`
 - `NEWAGENT_BAILIAN_SUMMARIZATION_BASE_URL`
+- `NEWAGENT_ENABLE_EXTERNAL_REVIEW`
+- `NEWAGENT_EXTERNAL_REVIEW_MODEL`
+- `OPENROUTER_API_KEY`
+- `NEWAGENT_OPENROUTER_BASE_URL`
+- `NEWAGENT_OPENROUTER_APP_NAME`
+- `NEWAGENT_OPENROUTER_SITE_URL`
 - `NEWAGENT_STORAGE_ROOT`
 - `NEWAGENT_SCRAPLING_BASE_URL`
 
@@ -42,6 +48,10 @@
 - 进程环境变量优先于 `.env`
 - `.env` 只保留给本地开发或临时调试
 - 远端默认建议设置 `NEWAGENT_DISABLE_CODEX=true`
+- 如需第二裁判，推荐同时设置：
+  - `NEWAGENT_ENABLE_EXTERNAL_REVIEW=true`
+  - `NEWAGENT_EXTERNAL_REVIEW_MODEL=stepfun/step-3.5-flash:free`
+  - `OPENROUTER_API_KEY=...`
 
 ## Install
 
@@ -133,11 +143,16 @@ pm2 save
 - 自动加载远端 6 个项目基线
 - 接住飞书消息
 - 飞书通道固定复用一个统一总管会话
+- 用户确认信号会写回 project memory，后续规划会复用
 - 自动把最近几轮 transcript 和长期压缩记忆带进 planner
-- 飞书统一会话每 5 小时自动压缩一次上下文
+- 后台维护循环每 5 分钟巡检一次，并在 5 小时间隔到点后自动压缩统一会话上下文
+- 前台记忆写入与后台压缩互斥，重复触发时会走 pending + trailing run
 - 自动调用百炼 Coding Plan 通道上的 `qwen3.5-plus`
   - 规划语义仍然标记为 `codingplan`
   - 请求体会附带 `extra_body.enable_thinking=true`
+- 如已启用 OpenRouter 外部复核：
+  - 计划结果会先走第二模型复核，再决定是否自动推进
+  - 压缩结果会走第二模型复核，并把可复用约束写回 session memory
 - 自动回一条中文确认摘要
 - 自动推进第一版 manager loop
   - 读取项目注册表

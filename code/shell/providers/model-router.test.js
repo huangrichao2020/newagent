@@ -44,6 +44,22 @@ test('resolveRoute sends review and repair intents to codex tool adapters', () =
   assert.equal(repair.tool_name, 'codex_repair_workspace')
 })
 
+test('resolveRoute sends evaluation intents to OpenRouter when external review is enabled', () => {
+  const router = createModelRouter({
+    managerProfile: createRemoteServerManagerProfile({
+      env: {
+        NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
+        NEWAGENT_EXTERNAL_REVIEW_MODEL: 'stepfun/step-3.5-flash:free'
+      }
+    })
+  })
+  const route = router.resolveRoute('evaluate')
+
+  assert.equal(route.runtime, 'llm')
+  assert.equal(route.provider, 'openrouter')
+  assert.equal(route.model, 'stepfun/step-3.5-flash:free')
+})
+
 test('resolveRoute disables review and repair when Codex integration is turned off', () => {
   const router = createModelRouter({
     managerProfile: createRemoteServerManagerProfile({
@@ -59,4 +75,16 @@ test('resolveRoute disables review and repair when Codex integration is turned o
   assert.match(review.reason, /disabled/i)
   assert.equal(repair.runtime, 'disabled')
   assert.match(repair.reason, /disabled/i)
+})
+
+test('resolveRoute disables evaluation when external review is turned off', () => {
+  const router = createModelRouter({
+    managerProfile: createRemoteServerManagerProfile({
+      env: {}
+    })
+  })
+  const route = router.resolveRoute('evaluate')
+
+  assert.equal(route.runtime, 'disabled')
+  assert.match(route.reason, /external evaluation is disabled/i)
 })

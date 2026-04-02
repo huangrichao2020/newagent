@@ -11,6 +11,10 @@ const INTENT_TO_ROUTE = new Map([
   ['operate', 'execution'],
   ['summarize', 'summarization'],
   ['summary', 'summarization'],
+  ['evaluate', 'evaluation'],
+  ['evaluation', 'evaluation'],
+  ['reflect', 'evaluation'],
+  ['reflection', 'evaluation'],
   ['review', 'review'],
   ['repair', 'repair'],
   ['fix', 'repair']
@@ -63,6 +67,17 @@ export function createModelRouter({ managerProfile = createRemoteServerManagerPr
         route_key: routeKey,
         runtime: 'tool',
         tool_name: managerProfile.codex_integration.repair_tool_name
+      }
+    }
+
+    if (routeKey === 'evaluation') {
+      if (!managerProfile.external_review?.enabled) {
+        return {
+          intent: normalizedIntent,
+          route_key: routeKey,
+          runtime: 'disabled',
+          reason: 'External evaluation is disabled for this environment'
+        }
       }
     }
 

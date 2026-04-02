@@ -77,6 +77,19 @@ function resolveExtraBody(route) {
   return null
 }
 
+function resolveExtraHeaders(route) {
+  if (!route.extra_headers || typeof route.extra_headers !== 'object') {
+    return null
+  }
+
+  const entries = Object.entries(route.extra_headers)
+    .filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
+
+  return entries.length > 0
+    ? Object.fromEntries(entries)
+    : null
+}
+
 async function parseJsonResponse(response) {
   const contentType = response.headers?.get?.('content-type') ?? ''
 
@@ -118,18 +131,23 @@ export function createBailianProvider({
     const route = modelRouter.resolveRoute(intent)
 
     if (route.runtime !== 'llm') {
-      throw new Error(`Intent ${intent} is not routed to a Bailian model`)
+      throw new Error(`Intent ${intent} is not routed to an LLM provider`)
     }
 
     const resolvedApiKey = resolveRouteApiKey(route, apiKey)
 
     if (!resolvedApiKey) {
+      if (route.provider === 'openrouter') {
+        throw new Error('Missing OpenRouter API key. Set OPENROUTER_API_KEY or NEWAGENT_OPENROUTER_API_KEY.')
+      }
+
       throw new Error('Missing Bailian API key. Set NEWAGENT_BAILIAN_API_KEY or DASHSCOPE_API_KEY.')
     }
 
     const resolvedBaseUrl = resolveRouteBaseUrl(route, baseUrl)
     const providerModel = resolveProviderModel(route)
     const extraBody = resolveExtraBody(route)
+    const extraHeaders = resolveExtraHeaders(route)
     const requestBody = {
       model: providerModel,
       messages: buildMessages({
@@ -150,7 +168,8 @@ export function createBailianProvider({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${resolvedApiKey}`
+        Authorization: `Bearer ${resolvedApiKey}`,
+        ...(extraHeaders ?? {})
       },
       body: JSON.stringify(requestBody),
       signal
@@ -167,10 +186,12 @@ export function createBailianProvider({
     return {
       route,
       request: {
+        provider: route.provider,
         base_url: resolvedBaseUrl,
         model: providerModel,
         route_model: route.model,
         extra_body: extraBody,
+        extra_headers: extraHeaders,
         message_count: requestBody.messages.length
       },
       response: {

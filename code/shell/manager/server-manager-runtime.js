@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { mkdir, rm } from 'node:fs/promises'
 import { createSessionStore } from '../session/session-store.js'
 import { createMemoryStore } from '../memory/memory-store.js'
 import {
@@ -17,11 +18,21 @@ import {
   buildManagerPlanningSystemPrompt,
   parseManagerPlanningResponse
 } from './manager-planner.js'
+import {
+  buildManagerQualityReviewPrompt,
+  buildManagerQualityReviewSystemPrompt,
+  parseManagerQualityReviewResponse
+} from './quality-review.js'
 import { createManagerExecutor } from './manager-executor.js'
 import { readJson, writeJsonAtomic } from '../../storage/json-files.js'
 
 const FEISHU_UNIFIED_CHANNEL_KEY = 'feishu-primary'
 const DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS = 5 * 60 * 60 * 1000
+const DEFAULT_MAINTENANCE_POLL_INTERVAL_MS = 5 * 60 * 1000
+const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
+const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
+const MAX_TRANSCRIPT_LINES = 10
+const CONFIRMATION_SIGNAL_PATTERN = /^(好|好的|好啊|收到|明白|没问题|可以|行|行的|就这样|就这样吧|按这个来|按这个做|继续|继续吧|yes|perfect|exactly|keepdoingthat)$/u
 
 function buildOperatorTitle(message) {
   const sender = message.sender_open_id ?? message.sender_user_id ?? 'operator'
@@ -128,7 +139,7 @@ function shouldIncludeTranscriptEvent(event, excludeTaskId) {
 function buildTranscriptLines(timeline = [], {
   excludeTaskId = null,
   sinceAt = null,
-  maxMessages = 10
+  maxMessages = MAX_TRANSCRIPT_LINES
 } = {}) {
   const sinceTimestamp = sinceAt ? parseIsoTimestamp(sinceAt) : null
 
@@ -159,6 +170,140 @@ function buildTranscriptLines(timeline = [], {
     })
     .filter(Boolean)
     .slice(-maxMessages)
+}
+
+function normalizeForSignalMatch(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[，。,.!！?？:：;；'"“”‘’、\-]/gu, '')
+}
+
+function isPositiveConfirmationMessage(message) {
+  return CONFIRMATION_SIGNAL_PATTERN.test(
+    normalizeForSignalMatch(buildOperatorRequest(message))
+  )
+}
+
+function summarizeConfirmedAssistantReply(content) {
+  const lines = String(content ?? '')
+    .split('\n')
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+  const preferred = lines.find((line) =>
+    !line.startsWith('已收到')
+    && !line.startsWith('我先理解一下')
+    && !line.startsWith('我先拆一下')
+  )
+
+  return cleanText(preferred ?? lines[0] ?? '').slice(0, 160)
+}
+
+function findLatestAssistantFinalReply(timeline = [], excludeTaskId = null) {
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const event = timeline[index]
+
+    if (event.task_id === excludeTaskId) {
+      continue
+    }
+
+    if (
+      event.kind === 'assistant_message_added'
+      && event.payload?.stage === 'final_reply'
+    ) {
+      const summary = summarizeConfirmedAssistantReply(event.payload?.content)
+
+      if (summary) {
+        return summary
+      }
+    }
+  }
+
+  return null
+}
+
+function hasForegroundMemoryWrite(snapshot, {
+  taskId = null,
+  sinceAt = null
+} = {}) {
+  const sinceTimestamp = parseIsoTimestamp(sinceAt)
+
+  return snapshot.timeline.some((event) =>
+    event.kind === 'memory_written'
+    && (taskId == null || event.task_id === taskId)
+    && (
+      sinceTimestamp == null
+      || parseIsoTimestamp(event.at) == null
+      || parseIsoTimestamp(event.at) >= sinceTimestamp
+    )
+  )
+}
+
+function isRecentFeishuActivity(channelState, nowTimestamp) {
+  const lastMessageTimestamp = parseIsoTimestamp(channelState?.last_message_at)
+
+  if (lastMessageTimestamp == null) {
+    return false
+  }
+
+  return nowTimestamp - lastMessageTimestamp < BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS
+}
+
+function computeMaintenancePollInterval(contextCompactionIntervalMs) {
+  if (contextCompactionIntervalMs == null || contextCompactionIntervalMs <= 0) {
+    return null
+  }
+
+  return Math.max(
+    1000,
+    Math.min(contextCompactionIntervalMs, DEFAULT_MAINTENANCE_POLL_INTERVAL_MS)
+  )
+}
+
+function createRecurringTask({
+  setTimeoutFn,
+  clearTimeoutFn,
+  intervalMs,
+  runOnce
+}) {
+  let stopped = false
+  let timer = null
+  let inFlight = Promise.resolve()
+
+  function scheduleNext() {
+    if (stopped) {
+      return
+    }
+
+    timer = setTimeoutFn(() => {
+      if (stopped) {
+        return
+      }
+
+      inFlight = Promise.resolve()
+        .then(() => runOnce())
+        .catch(() => {})
+        .finally(() => {
+          scheduleNext()
+        })
+    }, intervalMs)
+
+    timer?.unref?.()
+  }
+
+  scheduleNext()
+
+  return {
+    async stop() {
+      stopped = true
+
+      if (timer) {
+        clearTimeoutFn(timer)
+      }
+
+      await inFlight
+    }
+  }
 }
 
 function buildManagerCompactionSystemPrompt() {
@@ -364,6 +509,134 @@ export function createServerManagerRuntime({
     return state
   }
 
+  function getCompactionLockPath(channelKey) {
+    return join(storageRoot, 'channels', `${channelKey}${FEISHU_COMPACTION_LOCK_SUFFIX}`)
+  }
+
+  async function tryAcquireCompactionLock(channelKey) {
+    try {
+      await mkdir(getCompactionLockPath(channelKey))
+      return true
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        return false
+      }
+
+      throw error
+    }
+  }
+
+  async function releaseCompactionLock(channelKey) {
+    await rm(getCompactionLockPath(channelKey), {
+      recursive: true,
+      force: true
+    })
+  }
+
+  async function reviewWithExternalModel({
+    sessionId,
+    mode,
+    operatorRequest = null,
+    sessionSummary = null,
+    recentTranscript = [],
+    plan = null,
+    compaction = null
+  }) {
+    if (!managerProfile.external_review?.enabled || !bailianProvider) {
+      return null
+    }
+
+    try {
+      const providerResult = await bailianProvider.invokeByIntent({
+        intent: 'evaluate',
+        systemPrompt: buildManagerQualityReviewSystemPrompt(),
+        prompt: buildManagerQualityReviewPrompt({
+          mode,
+          operatorRequest,
+          sessionSummary,
+          recentTranscript,
+          plan,
+          compaction
+        })
+      })
+      const review = parseManagerQualityReviewResponse({
+        text: providerResult.response.content ?? ''
+      })
+
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'external_quality_review_completed',
+        actor: 'manager:reviewer',
+        payload: {
+          mode,
+          verdict: review.verdict,
+          issue_count: review.issues.length,
+          constraint_count: review.constraints.length,
+          model: providerResult.route.model,
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+        },
+        at: nowIso()
+      })
+      await emitHook({
+        name: 'manager.quality_review.completed',
+        sessionId,
+        actor: 'manager:reviewer',
+        payload: {
+          mode,
+          verdict: review.verdict,
+          issue_count: review.issues.length,
+          constraint_count: review.constraints.length,
+          model: providerResult.route.model,
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+        }
+      })
+
+      for (const constraint of review.constraints) {
+        await memoryStore.addMemoryEntry({
+          sessionId,
+          scope: 'session',
+          kind: 'constraint',
+          content: constraint,
+          tags: ['external_review', 'quality_constraint', mode]
+        })
+      }
+
+      return {
+        ...review,
+        provider_result: {
+          route: providerResult.route,
+          request: providerResult.request
+        }
+      }
+    } catch (error) {
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'external_quality_review_failed',
+        actor: 'manager:reviewer',
+        payload: {
+          mode,
+          message: error.message
+        },
+        at: nowIso()
+      })
+      await emitHook({
+        name: 'manager.quality_review.failed',
+        sessionId,
+        actor: 'manager:reviewer',
+        payload: {
+          mode,
+          message: error.message
+        }
+      })
+
+      return {
+        verdict: 'warn',
+        summary: `外部复核未完成：${error.message}`,
+        issues: [error.message],
+        constraints: [],
+        failed: true
+      }
+    }
+  }
+
   async function bootstrapServerBaseline({
     seedAliyun = true
   } = {}) {
@@ -481,7 +754,7 @@ export function createServerManagerRuntime({
 
   async function maybeCompactFeishuContext({
     sessionId,
-    currentTaskId
+    currentTaskId = null
   }) {
     if (!bailianProvider || contextCompactionIntervalMs == null || contextCompactionIntervalMs <= 0) {
       return null
@@ -500,36 +773,105 @@ export function createServerManagerRuntime({
       return null
     }
 
-    const snapshot = await sessionStore.loadSession(sessionId)
-    const transcriptLines = buildTranscriptLines(snapshot.timeline, {
-      excludeTaskId: currentTaskId,
-      sinceAt: lastCompactedAt,
-      maxMessages: 24
-    })
-    const storedCompactions = await memoryStore.searchMemoryEntries({
-      sessionId,
-      scope: 'session',
-      tag: 'context_compaction'
-    })
-    const latestStoredMemory = storedCompactions.at(-1)?.content ?? null
+    const acquired = await tryAcquireCompactionLock(FEISHU_UNIFIED_CHANNEL_KEY)
 
-    if (transcriptLines.length === 0 && latestStoredMemory) {
+    if (!acquired) {
       const currentAt = nowIso()
 
       await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
         ...channelState,
         updated_at: currentAt,
-        last_compacted_at: currentAt,
+        pending_compaction: true,
+        pending_compaction_at: currentAt,
         version: 1
+      })
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'conversation_compaction_deferred',
+        actor: 'manager:memory',
+        payload: {
+          reason: 'compaction_already_running'
+        },
+        at: currentAt
       })
 
       return {
-        status: 'noop',
-        reason: 'no_new_transcript'
+        status: 'deferred',
+        reason: 'compaction_already_running'
       }
     }
 
-    try {
+    async function compactOnce({ force = false } = {}) {
+      const latestChannelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+      const latestCompactedAt = latestChannelState?.last_compacted_at ?? lastCompactedAt
+      const snapshot = await sessionStore.loadSession(sessionId)
+
+      const skipForForegroundMemory = currentTaskId
+        ? hasForegroundMemoryWrite(snapshot, {
+            taskId: currentTaskId
+          })
+        : hasForegroundMemoryWrite(snapshot, {
+            sinceAt: latestCompactedAt
+          })
+
+      if (!force && skipForForegroundMemory) {
+        const currentAt = nowIso()
+        const reason = currentTaskId
+          ? 'foreground_memory_written'
+          : 'foreground_memory_written_since_last_compaction'
+
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'conversation_compaction_skipped',
+          actor: 'manager:memory',
+          payload: {
+            reason
+          },
+          at: currentAt
+        })
+        await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+          ...latestChannelState,
+          updated_at: currentAt,
+          last_compacted_at: currentAt,
+          pending_compaction: false,
+          pending_compaction_at: null,
+          version: 1
+        })
+
+        return {
+          status: 'skipped',
+          reason
+        }
+      }
+
+      const transcriptLines = buildTranscriptLines(snapshot.timeline, {
+        excludeTaskId: currentTaskId,
+        sinceAt: latestCompactedAt,
+        maxMessages: 24
+      })
+      const storedCompactions = await memoryStore.searchMemoryEntries({
+        sessionId,
+        scope: 'session',
+        tag: 'context_compaction'
+      })
+      const latestStoredMemory = storedCompactions.at(-1)?.content ?? null
+
+      if (transcriptLines.length === 0 && latestStoredMemory) {
+        const currentAt = nowIso()
+
+        await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+          ...latestChannelState,
+          updated_at: currentAt,
+          last_compacted_at: currentAt,
+          pending_compaction: false,
+          pending_compaction_at: null,
+          version: 1
+        })
+
+        return {
+          status: 'noop',
+          reason: 'no_new_transcript'
+        }
+      }
+
       const providerResult = await bailianProvider.invokeByIntent({
         intent: 'summarize',
         systemPrompt: buildManagerCompactionSystemPrompt(),
@@ -542,6 +884,47 @@ export function createServerManagerRuntime({
       const compaction = parseManagerCompactionResponse({
         text: providerResult.response.content ?? ''
       })
+      const review = await reviewWithExternalModel({
+        sessionId,
+        mode: 'compaction_review',
+        operatorRequest: transcriptLines
+          .filter((line) => line.startsWith('operator: '))
+          .map((line) => line.slice('operator: '.length))
+          .join('\n') || null,
+        sessionSummary: snapshot.session.summary ?? null,
+        recentTranscript: transcriptLines.slice(-MAX_TRANSCRIPT_LINES),
+        compaction
+      })
+      const shouldKeepCompaction =
+        !review || review.verdict !== 'block' || !managerProfile.external_review?.enforcing
+
+      if (!shouldKeepCompaction) {
+        const currentAt = nowIso()
+
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'conversation_compaction_blocked',
+          actor: 'manager:reviewer',
+          payload: {
+            summary: review.summary,
+            issues: review.issues
+          },
+          at: currentAt
+        })
+        await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+          ...latestChannelState,
+          updated_at: currentAt,
+          last_compacted_at: currentAt,
+          pending_compaction: false,
+          pending_compaction_at: null,
+          version: 1
+        })
+
+        return {
+          status: 'blocked',
+          review
+        }
+      }
+
       const memoryEntry = await memoryStore.addMemoryEntry({
         sessionId,
         scope: 'session',
@@ -557,7 +940,8 @@ export function createServerManagerRuntime({
         payload: {
           memory_id: memoryEntry.id,
           model: providerResult.route.model,
-          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+          review_verdict: review?.verdict ?? null
         },
         at: currentAt
       })
@@ -569,24 +953,53 @@ export function createServerManagerRuntime({
         payload: {
           memory_id: memoryEntry.id,
           model: providerResult.route.model,
-          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+          provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+          review_verdict: review?.verdict ?? null
         }
       })
       await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
-        ...channelState,
+        ...latestChannelState,
         updated_at: currentAt,
         last_compacted_at: currentAt,
+        pending_compaction: false,
+        pending_compaction_at: null,
         version: 1
       })
 
       return {
         status: 'compacted',
         memory_entry_id: memoryEntry.id,
+        review,
         provider_result: {
           route: providerResult.route,
           request: providerResult.request
         }
       }
+    }
+
+    try {
+      const result = await compactOnce()
+      const stateAfter = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+
+      if (stateAfter?.pending_compaction) {
+        await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
+          ...stateAfter,
+          pending_compaction: false,
+          pending_compaction_at: null,
+          updated_at: nowIso(),
+          version: 1
+        })
+        const trailing = await compactOnce({
+          force: true
+        })
+
+        return {
+          ...result,
+          trailing
+        }
+      }
+
+      return result
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'conversation_compaction_failed',
@@ -610,6 +1023,65 @@ export function createServerManagerRuntime({
         status: 'failed',
         error: error.message
       }
+    } finally {
+      await releaseCompactionLock(FEISHU_UNIFIED_CHANNEL_KEY)
+    }
+  }
+
+  async function runFeishuMaintenanceOnce() {
+    const channelState = await loadChannelState(FEISHU_UNIFIED_CHANNEL_KEY)
+    const nowTimestamp = nowFn()
+
+    if (!channelState?.session_id) {
+      return {
+        status: 'idle'
+      }
+    }
+
+    if (isRecentFeishuActivity(channelState, nowTimestamp)) {
+      return {
+        status: 'recent_activity'
+      }
+    }
+
+    const lastCompactedAt = channelState.last_compacted_at ?? channelState.created_at ?? null
+    const lastCompactedMs = parseIsoTimestamp(lastCompactedAt)
+    const isDue = lastCompactedMs == null
+      || nowTimestamp - lastCompactedMs >= contextCompactionIntervalMs
+
+    if (!isDue && !channelState.pending_compaction) {
+      return {
+        status: 'not_due'
+      }
+    }
+
+    return maybeCompactFeishuContext({
+      sessionId: channelState.session_id
+    })
+  }
+
+  function startFeishuMaintenanceLoop() {
+    const pollIntervalMs = computeMaintenancePollInterval(contextCompactionIntervalMs)
+
+    if (pollIntervalMs == null) {
+      return {
+        started: false,
+        poll_interval_ms: null,
+        async stop() {}
+      }
+    }
+
+    const recurringTask = createRecurringTask({
+      setTimeoutFn,
+      clearTimeoutFn,
+      intervalMs: pollIntervalMs,
+      runOnce: runFeishuMaintenanceOnce
+    })
+
+    return {
+      started: true,
+      poll_interval_ms: pollIntervalMs,
+      stop: recurringTask.stop
     }
   }
 
@@ -623,13 +1095,20 @@ export function createServerManagerRuntime({
 
     const projects = await projectRegistry.listProjects()
     const snapshot = await sessionStore.loadSession(sessionId)
-    const operatorRules = prioritizeFeedbackEntries(
-      await memoryStore.searchMemoryEntries({
-        sessionId,
-        scope: 'project',
-        tag: 'feedback_rule'
-      })
-    ).slice(0, 6)
+    const feedbackRules = await memoryStore.searchMemoryEntries({
+      sessionId,
+      scope: 'project',
+      tag: 'feedback_rule'
+    })
+    const confirmationSignals = await memoryStore.searchMemoryEntries({
+      sessionId,
+      scope: 'project',
+      tag: 'confirmation_signal'
+    })
+    const operatorRules = prioritizeFeedbackEntries([
+      ...feedbackRules,
+      ...confirmationSignals
+    ]).slice(0, 6)
     const longTermMemory = (
       await memoryStore.searchMemoryEntries({
         sessionId,
@@ -672,6 +1151,18 @@ export function createServerManagerRuntime({
       text: providerResult.response.content ?? '',
       availableProjects: projects
     })
+    const review = await reviewWithExternalModel({
+      sessionId,
+      mode: 'plan_review',
+      operatorRequest: buildOperatorRequest(message),
+      sessionSummary: snapshot.session.summary ?? null,
+      recentTranscript,
+      plan
+    })
+
+    if (review?.issues?.length > 0) {
+      plan.operator_reply = `${plan.operator_reply}\n外部复核提示：${review.issues.join('；')}`
+    }
 
     await sessionStore.createPlan(sessionId, {
       steps: plan.steps
@@ -684,7 +1175,8 @@ export function createServerManagerRuntime({
         project_keys: plan.project_keys,
         step_count: plan.steps.length,
         model: providerResult.route.model,
-        provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+        provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+        review_verdict: review?.verdict ?? null
       }
     })
     await sessionStore.appendTimelineEvent(sessionId, {
@@ -702,12 +1194,14 @@ export function createServerManagerRuntime({
         project_keys: plan.project_keys,
         step_count: plan.steps.length,
         model: providerResult.route.model,
-        provider: providerResult.route.provider ?? providerResult.route.runtime ?? null
+        provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
+        review_verdict: review?.verdict ?? null
       }
     })
 
     return {
       plan,
+      review,
       provider_result: {
         route: providerResult.route,
         request: providerResult.request,
@@ -1111,10 +1605,22 @@ export function createServerManagerRuntime({
     channel,
     message
   }) {
+    const snapshot = await sessionStore.loadSession(sessionId)
     const candidates = extractFeedbackMemoryCandidates({
       channel,
       messageText: buildOperatorRequest(message)
     })
+    const confirmedReply = isPositiveConfirmationMessage(message)
+      ? findLatestAssistantFinalReply(snapshot.timeline, snapshot.task.id)
+      : null
+
+    if (confirmedReply) {
+      candidates.push({
+        kind: 'decision',
+        content: `用户确认上一轮有效做法可继续沿用：${confirmedReply}`,
+        tags: ['feedback', 'feedback_rule', 'confirmation_signal', channel]
+      })
+    }
 
     if (candidates.length === 0) {
       return {
@@ -1130,12 +1636,27 @@ export function createServerManagerRuntime({
     let existingCount = 0
 
     for (const candidate of candidates) {
-      const existingMatches = await memoryStore.searchMemoryEntries({
-        sessionId,
-        scope: 'project',
-        query: candidate.content,
-        tag: 'feedback_rule'
-      })
+      const existingTags = [...new Set(candidate.tags ?? [])]
+      const matchedEntries = []
+
+      for (const tag of existingTags) {
+        const matches = await memoryStore.searchMemoryEntries({
+          sessionId,
+          scope: 'project',
+          query: candidate.content,
+          tag
+        })
+
+        matchedEntries.push(...matches)
+      }
+
+      const existingMatches = matchedEntries.length > 0
+        ? matchedEntries
+        : await memoryStore.searchMemoryEntries({
+            sessionId,
+            scope: 'project',
+            query: candidate.content
+          })
       const existing = existingMatches.find(
         (entry) =>
           entry.kind === candidate.kind &&
@@ -1323,7 +1844,13 @@ export function createServerManagerRuntime({
 
           ackText = `${ackText}\n${planning.plan.operator_reply}`
 
-          if (autoExecuteSafeInspect) {
+          const allowAutoExecute = autoExecuteSafeInspect && planning.review?.verdict !== 'block'
+
+          if (!allowAutoExecute && planning.review?.verdict === 'block') {
+            ackText = `${ackText}\n外部复核要求先人工确认，本轮暂不自动推进。`
+          }
+
+          if (allowAutoExecute) {
             execution = await managerExecutor.runManagerLoop({
               sessionId,
               currentInput: buildOperatorRequest(message),
@@ -1478,10 +2005,15 @@ export function createServerManagerRuntime({
         })
       }
     })
+    const maintenance = startFeishuMaintenanceLoop()
 
     return {
       bootstrap,
-      channel_state: state
+      channel_state: state,
+      maintenance_state: {
+        started: maintenance.started,
+        poll_interval_ms: maintenance.poll_interval_ms
+      }
     }
   }
 
@@ -1490,6 +2022,7 @@ export function createServerManagerRuntime({
     ensureServerBaseline,
     planSession,
     handleChannelMessage,
+    runFeishuMaintenanceOnce,
     startFeishuLoop
   }
 }
