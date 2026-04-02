@@ -169,8 +169,7 @@ function waitForMs(durationMs) {
   }
 
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, durationMs)
-    timer?.unref?.()
+    setTimeout(resolve, durationMs)
   })
 }
 

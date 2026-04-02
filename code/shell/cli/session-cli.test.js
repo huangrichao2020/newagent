@@ -814,6 +814,33 @@ test('coworker wait can long-poll for the next pending Mac-local Codex request',
   assert.equal(payload.request.claimed_by, 'codex_mac_local')
 })
 
+test('coworker wait returns timed_out when no pending request arrives', async () => {
+  const storageRoot = await createStorageRoot()
+
+  const waited = await executeCli({
+    argv: [
+      'coworker',
+      'wait',
+      '--storage-root',
+      storageRoot,
+      '--target',
+      'codex_mac_local',
+      '--timeout-ms',
+      '50',
+      '--poll-interval-ms',
+      '10',
+      '--json'
+    ]
+  })
+
+  assert.equal(waited.exitCode, 0)
+
+  const payload = JSON.parse(waited.stdout)
+  assert.equal(payload.command, 'coworker wait')
+  assert.equal(payload.timed_out, true)
+  assert.equal(payload.request, null)
+})
+
 test('missing required arguments returns a non-zero result with a clear error', async () => {
   const result = await executeCli({
     argv: ['start', '--json']
