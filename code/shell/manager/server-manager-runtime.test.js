@@ -15,7 +15,13 @@ async function createHarness({
   enableExternalReview = false,
   feishuAppendMergeWindowMs = undefined,
   plannerDelayMs = 0,
+  fetchDelayMs = 0,
   progressReplyDelayMs = 2000,
+  longRunningFeedbackMs = undefined,
+  longRunningCheckpointMs = undefined,
+  longRunningExtensionApprovalMs = undefined,
+  longRunningFinalStopMs = undefined,
+  plannerResponse = null,
   evaluationResponse = {
     verdict: 'pass',
     summary: '外部复核通过。',
@@ -142,11 +148,19 @@ async function createHarness({
       nowFn,
       feishuAppendMergeWindowMs,
       progressReplyDelayMs,
+      longRunningFeedbackMs,
+      longRunningCheckpointMs,
+      longRunningExtensionApprovalMs,
+      longRunningFinalStopMs,
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
         statusText: 'OK',
         async text() {
+          if (fetchDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, fetchDelayMs))
+          }
+
           return `health ok ${url}`
         }
       }),
@@ -236,7 +250,7 @@ async function createHarness({
               usage: {
                 total_tokens: 120
               },
-              content: JSON.stringify({
+              content: JSON.stringify(plannerResponse ?? {
                 summary: '先检查股票项目发布链，再确认 deploy-hub 是否异常。',
                 project_keys: ['uwillberich', 'deploy-hub'],
                 operator_reply: '先查 uwillberich 和 deploy-hub，再给你回执行结论。',
@@ -816,6 +830,146 @@ test('startFeishuLoop stops the active turn at the next safe point when /stop ar
   if (firstResult.session_id) {
     const snapshot = await sessionStore.loadSession(firstResult.session_id)
     assert.equal(snapshot.session.status, 'aborted')
+  }
+})
+
+test('handleChannelMessage sends a 30-second style progress feedback before planning finishes', async () => {
+  const { runtime, sessionStore } = await createHarness({
+    plannerDelayMs: 30,
+    progressReplyDelayMs: 0,
+    longRunningFeedbackMs: 5,
+    longRunningCheckpointMs: 100,
+    longRunningFinalStopMs: 200
+  })
+
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_timeout_warn',
+      chat_id: 'oc_timeout_warn',
+      sender_open_id: 'ou_timeout_warn',
+      text: '帮我细查 deploy-hub 现状'
+    },
+    autoExecuteSafeInspect: false
+  })
+  const snapshot = await sessionStore.loadSession(result.session_id)
+
+  assert.ok(
+    snapshot.timeline.some(
+      (event) =>
+        ['assistant_message_added', 'assistant_message_updated'].includes(event.kind)
+        && event.payload.stage === 'timeout_warning'
+    )
+  )
+})
+
+test('handleChannelMessage requests more time at the checkpoint and defaults to continue after 10 seconds of silence', async () => {
+  const { runtime, sessionStore } = await createHarness({
+    plannerDelayMs: 30,
+    progressReplyDelayMs: 0,
+    longRunningFeedbackMs: 5,
+    longRunningCheckpointMs: 10,
+    longRunningExtensionApprovalMs: 5,
+    longRunningFinalStopMs: 200,
+    plannerResponse: {
+      summary: '先探活 deploy-hub。',
+      project_keys: ['deploy-hub'],
+      operator_reply: '先探活 deploy-hub，再继续判断后续动作。',
+      steps: [
+        {
+          title: '探活 deploy-hub 服务状态',
+          kind: 'inspect',
+          notes: '确认 3900 服务是否正常'
+        }
+      ]
+    }
+  })
+
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_timeout_extend',
+      chat_id: 'oc_timeout_extend',
+      sender_open_id: 'ou_timeout_extend',
+      text: '帮我继续查 deploy-hub'
+    }
+  })
+  const snapshot = await sessionStore.loadSession(result.session_id)
+
+  assert.equal(result.stopped, false)
+  assert.equal(result.execution?.runs?.length >= 1, true)
+  assert.ok(
+    snapshot.timeline.some(
+      (event) =>
+        event.kind === 'assistant_message_added'
+        && event.payload.stage === 'timeout_extension_request'
+    )
+  )
+  assert.ok(
+    snapshot.timeline.some(
+      (event) =>
+        event.kind === 'manager_timeout_extension_resolved'
+        && event.payload.decision === 'default_approved'
+    )
+  )
+})
+
+test('handleChannelMessage stops the turn at the final timeout after the extra time budget is exhausted', async () => {
+  const { runtime, sessionStore } = await createHarness({
+    fetchDelayMs: 25,
+    progressReplyDelayMs: 0,
+    longRunningFeedbackMs: 5,
+    longRunningCheckpointMs: 10,
+    longRunningExtensionApprovalMs: 1,
+    longRunningFinalStopMs: 20,
+    plannerResponse: {
+      summary: '先探活 deploy-hub。',
+      project_keys: ['deploy-hub'],
+      operator_reply: '先探活 deploy-hub，再继续判断后续动作。',
+      steps: [
+        {
+          title: '探活 deploy-hub 服务状态',
+          kind: 'inspect',
+          notes: '故意拉长到超过最终时限'
+        },
+        {
+          title: '检查 deploy-hub 最近的发布票据和日志',
+          kind: 'inspect',
+          notes: '确认后续还有未完成步骤'
+        }
+      ]
+    }
+  })
+
+  const result = await runtime.handleChannelMessage({
+    channel: 'feishu',
+    message: {
+      message_id: 'om_timeout_final',
+      chat_id: 'oc_timeout_final',
+      sender_open_id: 'ou_timeout_final',
+      text: '帮我持续排查 deploy-hub'
+    }
+  })
+
+  assert.equal(result.stopped, true)
+
+  if (result.session_id) {
+    const snapshot = await sessionStore.loadSession(result.session_id)
+    assert.equal(snapshot.session.status, 'aborted')
+    assert.ok(
+      snapshot.timeline.some(
+        (event) =>
+          event.kind === 'assistant_message_added'
+          && event.payload.stage === 'timeout_final_stop'
+      )
+    )
+    assert.ok(
+      snapshot.timeline.some(
+        (event) =>
+          event.kind === 'manager_run_stopped'
+          && event.payload.stage === 'timeout_final_stop'
+      )
+    )
   }
 })
 

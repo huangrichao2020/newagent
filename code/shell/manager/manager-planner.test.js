@@ -97,6 +97,41 @@ test('buildManagerPlanningPrompt includes session continuity context when availa
   assert.match(prompt, /继续查 uwillberich/)
 })
 
+test('buildManagerPlanningPrompt includes service and route registry context when available', () => {
+  const prompt = buildManagerPlanningPrompt({
+    message: {
+      text: '帮我确认 3800 和 /apps/chaochao/ 分别归谁'
+    },
+    projects: getAliyunSeedProjects().slice(0, 2),
+    serviceInventory: [
+      {
+        service_key: 'novel-evolution-web',
+        project_key: 'novel-evolution',
+        process_name: 'novel-evolution',
+        listen_port: 3800,
+        healthcheck_url: 'http://127.0.0.1:3800/'
+      }
+    ],
+    routeInventory: [
+      {
+        route_key: 'uwillberich-public-app',
+        project_key: 'uwillberich',
+        path_prefix: '/apps/chaochao/',
+        public_url: 'http://120.26.32.59/apps/chaochao/',
+        static_root: '/opt/agent-sites/chaochao/current',
+        entry_html: '/opt/agent-sites/chaochao/current/index.html'
+      }
+    ]
+  })
+
+  assert.match(prompt, /SERVICE REGISTRY:/)
+  assert.match(prompt, /novel-evolution-web/)
+  assert.match(prompt, /3800/)
+  assert.match(prompt, /ROUTE REGISTRY:/)
+  assert.match(prompt, /\/apps\/chaochao\//)
+  assert.match(prompt, /\/opt\/agent-sites\/chaochao\/current\/index\.html/)
+})
+
 test('parseManagerPlanningResponse normalizes a fenced JSON plan', () => {
   const plan = parseManagerPlanningResponse({
     text: [

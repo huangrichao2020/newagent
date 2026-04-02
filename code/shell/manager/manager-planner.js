@@ -166,7 +166,9 @@ export function buildManagerPlanningPrompt({
   operatorRules = [],
   sessionSummary = null,
   longTermMemory = [],
-  recentTranscript = []
+  recentTranscript = [],
+  serviceInventory = [],
+  routeInventory = []
 }) {
   const inventory = projects
     .map((project) => [
@@ -223,6 +225,44 @@ export function buildManagerPlanningPrompt({
     sections.push({
       title: 'OPERATOR RULES',
       lines: operatorRules.map((rule) => `[${rule.kind}] ${rule.content}`)
+    })
+  }
+
+  if (serviceInventory.length > 0) {
+    sections.push({
+      title: 'SERVICE REGISTRY',
+      bullet: false,
+      lines: [serviceInventory
+        .map((service) => [
+          `- key: ${service.service_key}`,
+          `  project_key: ${service.project_key}`,
+          `  process_name: ${service.process_name ?? 'null'}`,
+          `  listen_port: ${service.listen_port ?? 'null'}`,
+          `  healthcheck_url: ${service.healthcheck_url ?? 'null'}`,
+          `  entry_html: ${service.entry_html ?? 'null'}`,
+          `  status: ${service.status ?? 'null'}`
+        ].join('\n'))
+        .join('\n')]
+    })
+  }
+
+  if (routeInventory.length > 0) {
+    sections.push({
+      title: 'ROUTE REGISTRY',
+      bullet: false,
+      lines: [routeInventory
+        .map((route) => [
+          `- key: ${route.route_key}`,
+          `  project_key: ${route.project_key}`,
+          `  service_key: ${route.service_key ?? 'null'}`,
+          `  path_prefix: ${route.path_prefix ?? 'null'}`,
+          `  public_url: ${route.public_url ?? 'null'}`,
+          `  upstream_url: ${route.upstream_url ?? 'null'}`,
+          `  static_root: ${route.static_root ?? 'null'}`,
+          `  entry_html: ${route.entry_html ?? 'null'}`,
+          `  status: ${route.status ?? 'null'}`
+        ].join('\n'))
+        .join('\n')]
     })
   }
 

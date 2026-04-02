@@ -8,9 +8,11 @@ import {
 } from '../memory/feedback-memory.js'
 import { createHookBus } from '../hooks/hook-bus.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
+import { createInfrastructureRegistry } from '../registry/infrastructure-registry.js'
 import { buildPromptContract } from '../prompts/prompt-contract.js'
 import {
   createRemoteServerManagerProfile,
+  getAliyunInfrastructureRegistry,
   getAliyunSeedProjects
 } from './remote-server-manager-profile.js'
 import {
@@ -31,10 +33,15 @@ const DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS = 5 * 60 * 60 * 1000
 const DEFAULT_MAINTENANCE_POLL_INTERVAL_MS = 5 * 60 * 1000
 const DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS = 800
 const DEFAULT_FEISHU_RESPONSE_MODE = 'balanced'
+const DEFAULT_FEISHU_LONG_RUNNING_FEEDBACK_MS = 30 * 1000
+const DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS = 3 * 60 * 1000
+const DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS = 10 * 1000
+const DEFAULT_FEISHU_FINAL_TIMEOUT_MS = 6 * 60 * 1000
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
 const CONFIRMATION_SIGNAL_PATTERN = /^(好|好的|好啊|收到|明白|没问题|可以|行|行的|就这样|就这样吧|按这个来|按这个做|继续|继续吧|yes|perfect|exactly|keepdoingthat)$/u
+const NEGATIVE_CONFIRMATION_SIGNAL_PATTERN = /^(不|不用|先别|别继续|暂停|先暂停|停|停止|stop|no|不用继续|先停下|先别继续|不要继续)$/u
 
 const DEFAULT_FEISHU_OPERATOR_PROFILE = Object.freeze({
   response_mode: DEFAULT_FEISHU_RESPONSE_MODE,
@@ -202,6 +209,23 @@ function summarizeExecutionRunsForReply(runs = []) {
       return `${index + 1}. ${summary}`
     })
     .filter(Boolean)
+}
+
+function formatElapsedDuration(durationMs) {
+  const totalSeconds = Math.max(1, Math.ceil((durationMs ?? 0) / 1000))
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds} 秒`
+  }
+
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (seconds === 0) {
+    return `${minutes} 分钟`
+  }
+
+  return `${minutes} 分 ${seconds} 秒`
 }
 
 function isComplexFeishuReply({
@@ -479,6 +503,66 @@ function isPositiveConfirmationMessage(message) {
   return CONFIRMATION_SIGNAL_PATTERN.test(
     normalizeForSignalMatch(buildOperatorRequest(message))
   )
+}
+
+function isNegativeConfirmationMessage(message) {
+  return NEGATIVE_CONFIRMATION_SIGNAL_PATTERN.test(
+    normalizeForSignalMatch(buildOperatorRequest(message))
+  )
+}
+
+function buildFeishuLongRunningFeedbackText(runState, nowTimestamp) {
+  const lines = [
+    `这轮已经处理了 ${formatElapsedDuration(nowTimestamp - runState.started_at_ms)}，我还在继续推进。`
+  ]
+
+  if (runState.phase === 'planning') {
+    lines.push('当前卡在整理计划和确认下一步。')
+  } else if (runState.phase === 'executing' && runState.latest_run?.summary) {
+    lines.push(`当前进度：${compactMultilineText(runState.latest_run.summary)}`)
+  } else if (runState.phase === 'planned' && runState.planning?.plan?.steps?.length) {
+    lines.push(`计划已拆成 ${runState.planning.plan.steps.length} 步，正在进入执行。`)
+  } else if (runState.phase === 'waiting_approval') {
+    lines.push('当前停在需要外部审批的步骤。')
+  } else {
+    lines.push('当前还没收口，但没有卡死。')
+  }
+
+  return lines.join('\n')
+}
+
+function buildFeishuTimeoutReviewText(runState, nowTimestamp, {
+  askForExtension = false,
+  finalStop = false
+} = {}) {
+  const lines = [
+    finalStop
+      ? `这轮已经到 ${formatElapsedDuration(nowTimestamp - runState.started_at_ms)} 的硬上限，我先停在这里。`
+      : `这轮已经处理了 ${formatElapsedDuration(nowTimestamp - runState.started_at_ms)}，我先停一下做个复盘。`
+  ]
+
+  if (runState.planning?.plan?.operator_reply) {
+    lines.push(`当前判断：${compactMultilineText(runState.planning.plan.operator_reply)}`)
+  }
+
+  const completedRuns = summarizeExecutionRunsForReply(runState.execution_runs ?? [])
+
+  if (completedRuns.length > 0) {
+    lines.push(`已推进：${completedRuns.join('；')}`)
+  } else if (runState.phase === 'planning') {
+    lines.push('当前主要耗时还在计划阶段。')
+  }
+
+  if (runState.latest_run?.summary) {
+    lines.push(`最近进度：${compactMultilineText(runState.latest_run.summary)}`)
+  }
+
+  if (askForExtension) {
+    lines.push('如果你同意我继续推进，直接回复“继续”或“可以”。')
+    lines.push('10 秒内没有新指示，我会按默认同意继续。')
+  }
+
+  return lines.join('\n')
 }
 
 function summarizeConfirmedAssistantReply(content) {
@@ -771,6 +855,10 @@ export function createServerManagerRuntime({
   fetchFn = globalThis.fetch,
   managerProfile = createRemoteServerManagerProfile(),
   progressReplyDelayMs = 2000,
+  longRunningFeedbackMs = DEFAULT_FEISHU_LONG_RUNNING_FEEDBACK_MS,
+  longRunningCheckpointMs = DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS,
+  longRunningExtensionApprovalMs = DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS,
+  longRunningFinalStopMs = DEFAULT_FEISHU_FINAL_TIMEOUT_MS,
   contextCompactionIntervalMs = DEFAULT_CONTEXT_COMPACTION_INTERVAL_MS,
   feishuAppendMergeWindowMs = DEFAULT_FEISHU_APPEND_MERGE_WINDOW_MS,
   nowFn = Date.now,
@@ -781,6 +869,7 @@ export function createServerManagerRuntime({
   const memoryStore = createMemoryStore({ storageRoot })
   const runtimeHookBus = hookBus ?? createHookBus({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
+  const infrastructureRegistry = createInfrastructureRegistry({ storageRoot })
   const managerExecutor = createManagerExecutor({
     storageRoot,
     workspaceRoot,
@@ -1109,10 +1198,16 @@ export function createServerManagerRuntime({
     const seededProjects = seedAliyun
       ? await projectRegistry.seedProjects(getAliyunSeedProjects())
       : []
+    const seededInfrastructure = seedAliyun
+      ? await infrastructureRegistry.seedRegistry(getAliyunInfrastructureRegistry())
+      : { projects: [], services: [], routes: [] }
 
     return {
       manager_profile: managerProfile,
-      seeded_project_count: seededProjects.length
+      seeded_project_count: seededProjects.length,
+      seeded_infra_project_count: seededInfrastructure.projects.length,
+      seeded_service_count: seededInfrastructure.services.length,
+      seeded_route_count: seededInfrastructure.routes.length
     }
   }
 
@@ -1136,11 +1231,16 @@ export function createServerManagerRuntime({
     seedAliyunIfEmpty = true
   } = {}) {
     const existingProjects = await projectRegistry.listProjects()
+    const existingInfrastructureProjects = await infrastructureRegistry.listProjects()
 
-    if (existingProjects.length > 0 || !seedAliyunIfEmpty) {
+    if (
+      (existingProjects.length > 0 && existingInfrastructureProjects.length > 0)
+      || !seedAliyunIfEmpty
+    ) {
       return {
         seeded: false,
-        project_count: existingProjects.length
+        project_count: existingProjects.length,
+        infra_project_count: existingInfrastructureProjects.length
       }
     }
 
@@ -1150,7 +1250,8 @@ export function createServerManagerRuntime({
 
     return {
       seeded: true,
-      project_count: bootstrap.seeded_project_count
+      project_count: bootstrap.seeded_project_count,
+      infra_project_count: bootstrap.seeded_infra_project_count
     }
   }
 
@@ -1591,6 +1692,8 @@ export function createServerManagerRuntime({
       excludeTaskId: snapshot.task.id,
       maxMessages: 10
     })
+    const serviceInventory = await infrastructureRegistry.listServices()
+    const routeInventory = await infrastructureRegistry.listRoutes()
     await emitHook({
       name: 'manager.planning.started',
       sessionId,
@@ -1599,7 +1702,9 @@ export function createServerManagerRuntime({
         available_project_count: projects.length,
         operator_rule_count: operatorRules.length,
         long_term_memory_count: longTermMemory.length,
-        transcript_line_count: recentTranscript.length
+        transcript_line_count: recentTranscript.length,
+        service_inventory_count: serviceInventory.length,
+        route_inventory_count: routeInventory.length
       }
     })
     const providerResult = await bailianProvider.invokeByIntent({
@@ -1613,7 +1718,9 @@ export function createServerManagerRuntime({
         operatorRules,
         sessionSummary: snapshot.session.summary ?? null,
         longTermMemory,
-        recentTranscript
+        recentTranscript,
+        serviceInventory,
+        routeInventory
       })
     })
     assertFeishuRunActive(
@@ -2310,6 +2417,311 @@ export function createServerManagerRuntime({
     }
   }
 
+  function updateFeishuRunProgressState(runState, updates = {}) {
+    if (!runState) {
+      return
+    }
+
+    if (updates.phase) {
+      runState.phase = updates.phase
+    }
+
+    if (updates.planning !== undefined) {
+      runState.planning = updates.planning
+    }
+
+    if (updates.latestRun !== undefined) {
+      runState.latest_run = updates.latestRun
+    }
+
+    if (updates.executionRuns !== undefined) {
+      runState.execution_runs = updates.executionRuns
+    }
+  }
+
+  function isMatchingFeishuExtensionMessage(message, request) {
+    if (!request) {
+      return false
+    }
+
+    if (request.chat_id && message?.chat_id && request.chat_id !== message.chat_id) {
+      return false
+    }
+
+    if (
+      request.sender_open_id
+      && (message?.sender_open_id ?? message?.sender_user_id)
+      && request.sender_open_id !== (message.sender_open_id ?? message.sender_user_id)
+    ) {
+      return false
+    }
+
+    return true
+  }
+
+  async function maybeResolveFeishuTimeExtensionDecision(message) {
+    const activeRun = feishuRuntimeState.active_run
+    const request = activeRun?.extension_request ?? null
+
+    if (!request || !isMatchingFeishuExtensionMessage(message, request)) {
+      return null
+    }
+
+    const parsedCommand = parseFeishuControlCommand(message)
+    let approved = null
+
+    if (parsedCommand?.command === 'stop' || isNegativeConfirmationMessage(message)) {
+      approved = false
+    } else if (isPositiveConfirmationMessage(message)) {
+      approved = true
+    }
+
+    if (approved == null) {
+      return null
+    }
+
+    request.resolveDecision({
+      approved,
+      decision: approved ? 'operator_approved' : 'operator_denied'
+    })
+
+    const ackText = approved ? '收到，我继续推进。' : '收到，这轮先停在这里。'
+
+    await deliverFeishuReply({
+      sessionId: request.session_id,
+      message,
+      text: ackText,
+      stage: 'timeout_extension_reply',
+      format: 'text',
+      timelineContent: ackText
+    })
+
+    return {
+      session_id: request.session_id,
+      ack_text: ackText,
+      planning: null,
+      execution: null,
+      command_name: 'timeout_extension'
+    }
+  }
+
+  function createFeishuRunTimeboxController({
+    sessionId,
+    channel,
+    message,
+    runState,
+    progressNotifier,
+    shouldReply
+  }) {
+    if (
+      channel !== 'feishu'
+      || !runState
+      || !shouldReply
+    ) {
+      return {
+        async flush() {
+          return {
+            stop: false
+          }
+        },
+        async stop() {}
+      }
+    }
+
+    let stopped = false
+    const timers = []
+
+    function schedule(delayMs, callback) {
+      if (delayMs == null || delayMs < 0) {
+        return
+      }
+
+      const timer = setTimeoutFn(() => {
+        Promise.resolve()
+          .then(() => callback())
+          .catch(() => {})
+      }, delayMs)
+
+      timer?.unref?.()
+      timers.push(timer)
+    }
+
+    schedule(longRunningFeedbackMs, async () => {
+      if (stopped || runState.warning_sent) {
+        return
+      }
+
+      runState.warning_sent = true
+      const text = buildFeishuLongRunningFeedbackText(runState, nowFn())
+
+      await progressNotifier.update({
+        stage: 'timeout_warning',
+        text
+      })
+    })
+
+    schedule(longRunningCheckpointMs, async () => {
+      if (stopped || runState.extension_handled) {
+        return
+      }
+
+      runState.extension_due = true
+    })
+
+    schedule(longRunningFinalStopMs, async () => {
+      if (stopped || runState.final_timeout_handled) {
+        return
+      }
+
+      runState.final_timeout_due = true
+    })
+
+    async function requestMoreTime() {
+      const reviewText = buildFeishuTimeoutReviewText(runState, nowFn(), {
+        askForExtension: true
+      })
+
+      await deliverFeishuReply({
+        sessionId,
+        message,
+        text: reviewText,
+        stage: 'timeout_extension_request',
+        format: 'text',
+        timelineContent: reviewText
+      })
+
+      await sessionStore.appendTimelineEvent(sessionId, {
+        kind: 'manager_timeout_extension_requested',
+        actor: 'manager:runtime',
+        payload: {
+          timeout_ms: longRunningCheckpointMs,
+          extension_timeout_ms: longRunningExtensionApprovalMs
+        }
+      })
+
+      return new Promise((resolve) => {
+        let resolved = false
+        const timer = setTimeoutFn(() => {
+          resolveDecision({
+            approved: true,
+            decision: 'default_approved'
+          })
+        }, longRunningExtensionApprovalMs)
+
+        timer?.unref?.()
+
+        function resolveDecision(decision) {
+          if (resolved) {
+            return
+          }
+
+          resolved = true
+          clearTimeoutFn(timer)
+
+          if (runState.extension_request?.id === request.id) {
+            runState.extension_request = null
+          }
+
+          resolve(decision)
+        }
+
+        const request = {
+          id: createUlid(nowFn()),
+          session_id: sessionId,
+          chat_id: message?.chat_id ?? null,
+          sender_open_id: message?.sender_open_id ?? message?.sender_user_id ?? null,
+          resolveDecision
+        }
+
+        runState.extension_request = request
+      })
+    }
+
+    async function flush({
+      allowContinue = true
+    } = {}) {
+      if (stopped) {
+        return {
+          stop: false
+        }
+      }
+
+      if (runState.final_timeout_due && !runState.final_timeout_handled) {
+        runState.final_timeout_handled = true
+        const reviewText = buildFeishuTimeoutReviewText(runState, nowFn(), {
+          finalStop: true
+        })
+
+        await deliverFeishuReply({
+          sessionId,
+          message,
+          text: reviewText,
+          stage: 'timeout_final_stop',
+          format: 'text',
+          timelineContent: reviewText
+        })
+
+        runState.stop_requested = true
+        runState.stop_stage = 'timeout_final_stop'
+
+        return {
+          stop: true,
+          stage: 'timeout_final_stop'
+        }
+      }
+
+      if (allowContinue && runState.extension_due && !runState.extension_handled) {
+        runState.extension_due = false
+        runState.extension_handled = true
+        const decision = await requestMoreTime()
+
+        await sessionStore.appendTimelineEvent(sessionId, {
+          kind: 'manager_timeout_extension_resolved',
+          actor: 'manager:runtime',
+          payload: {
+            decision: decision.decision
+          }
+        })
+
+        if (!decision.approved) {
+          runState.stop_requested = true
+          runState.stop_stage = 'timeout_extension_denied'
+
+          return {
+            stop: true,
+            stage: 'timeout_extension_denied'
+          }
+        }
+
+        runState.extension_granted = true
+      }
+
+      return {
+        stop: false
+      }
+    }
+
+    return {
+      async flush(options = {}) {
+        return flush(options)
+      },
+      async stop() {
+        stopped = true
+
+        for (const timer of timers) {
+          clearTimeoutFn(timer)
+        }
+
+        if (runState.extension_request) {
+          runState.extension_request.resolveDecision({
+            approved: true,
+            decision: 'runtime_stopped'
+          })
+        }
+      }
+    }
+  }
+
   async function learnOperatorFeedback({
     sessionId,
     channel,
@@ -2691,7 +3103,20 @@ export function createServerManagerRuntime({
       ? {
           id: createUlid(nowFn()),
           stop_requested: false,
-          session_id: null
+          stop_stage: null,
+          session_id: null,
+          started_at_ms: nowFn(),
+          phase: 'received',
+          planning: null,
+          latest_run: null,
+          execution_runs: [],
+          warning_sent: false,
+          extension_due: false,
+          extension_handled: false,
+          extension_granted: false,
+          extension_request: null,
+          final_timeout_due: false,
+          final_timeout_handled: false
         }
       : null
     let sessionId = null
@@ -2708,6 +3133,14 @@ export function createServerManagerRuntime({
       wasSent() {
         return false
       }
+    }
+    let timeboxController = {
+      async flush() {
+        return {
+          stop: false
+        }
+      },
+      async stop() {}
     }
 
     if (feishuRunState) {
@@ -2797,12 +3230,23 @@ export function createServerManagerRuntime({
             operatorProfile
           })
         : progressNotifier
+      timeboxController = createFeishuRunTimeboxController({
+        sessionId,
+        channel,
+        message,
+        runState: feishuRunState,
+        progressNotifier,
+        shouldReply
+      })
 
       ackText = activeTurn.kind === 'continued'
         ? `已收到，继续沿用总管会话 ${sessionId}。`
         : `已收到，总管会话 ${sessionId} 已创建。`
 
       try {
+        updateFeishuRunProgressState(feishuRunState, {
+          phase: 'preparing'
+        })
         assertFeishuRunActive(feishuRunState, 'before_feedback_learning')
         const feedbackLearning = await learnOperatorFeedback({
           sessionId,
@@ -2825,16 +3269,26 @@ export function createServerManagerRuntime({
         assertFeishuRunActive(feishuRunState, 'after_compaction')
 
         if (isLightweightPing(message)) {
+          updateFeishuRunProgressState(feishuRunState, {
+            phase: 'completed'
+          })
           ackText = buildLightweightPingReply()
           await completePingSession({
             sessionId,
             replyText: ackText
           })
         } else if (autoPlan && bailianProvider) {
+          updateFeishuRunProgressState(feishuRunState, {
+            phase: 'planning'
+          })
           planning = await planSession({
             sessionId,
             message,
             shouldStop: () => feishuRunState?.stop_requested === true
+          })
+          updateFeishuRunProgressState(feishuRunState, {
+            phase: 'planned',
+            planning
           })
           const shouldStreamProgress = channel === 'feishu'
             && isComplexFeishuReply({
@@ -2863,6 +3317,14 @@ export function createServerManagerRuntime({
 
           const allowAutoExecute = autoExecuteSafeInspect && planning.review?.verdict !== 'block'
 
+          const checkpointAfterPlanning = await timeboxController.flush({
+            allowContinue: allowAutoExecute
+          })
+
+          if (checkpointAfterPlanning.stop) {
+            throw new FeishuRunStoppedError(checkpointAfterPlanning.stage)
+          }
+
           if (!allowAutoExecute && planning.review?.verdict === 'block') {
             ackText = `${ackText}\n外部复核要求先人工确认，本轮暂不自动推进。`
           }
@@ -2870,12 +3332,29 @@ export function createServerManagerRuntime({
           assertFeishuRunActive(feishuRunState, 'after_planning')
 
           if (allowAutoExecute) {
+            updateFeishuRunProgressState(feishuRunState, {
+              phase: 'executing'
+            })
             execution = await managerExecutor.runManagerLoop({
               sessionId,
               currentInput: buildOperatorRequest(message),
               maxSteps: 4,
               onProgress: async ({ result, runs }) => {
+                updateFeishuRunProgressState(feishuRunState, {
+                  phase: result.status === 'waiting_approval' ? 'waiting_approval' : 'executing',
+                  latestRun: result,
+                  executionRuns: runs
+                })
+
                 if (!shouldStreamProgress) {
+                  const checkpoint = await timeboxController.flush({
+                    allowContinue: result.status === 'planned'
+                  })
+
+                  if (checkpoint.stop) {
+                    throw new FeishuRunStoppedError(checkpoint.stage)
+                  }
+
                   return
                 }
 
@@ -2885,12 +3364,22 @@ export function createServerManagerRuntime({
                   latestRun: result,
                   totalRuns: runs.length
                 })
+
+                const checkpoint = await timeboxController.flush({
+                  allowContinue: result.status === 'planned'
+                })
+
+                if (checkpoint.stop) {
+                  throw new FeishuRunStoppedError(checkpoint.stage)
+                }
               },
               shouldStop: () => feishuRunState?.stop_requested === true
             })
 
             if (execution?.status === 'stopped') {
-              throw new FeishuRunStoppedError('manager_loop_stopped')
+              throw new FeishuRunStoppedError(
+                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
+              )
             }
 
             if (execution.runs.length > 0) {
@@ -3003,6 +3492,7 @@ export function createServerManagerRuntime({
           }
         }
       } finally {
+        await timeboxController.stop()
         await progressNotifier.stop()
       }
 
@@ -3086,6 +3576,12 @@ export function createServerManagerRuntime({
       immediateReactionEmojiType: autoReply ? buildImmediateFeishuReaction() : null,
       immediateReplyText: autoReply ? buildImmediateFeishuAck() : null,
       onMessage: async (message) => {
+        const extensionDecision = await maybeResolveFeishuTimeExtensionDecision(message)
+
+        if (extensionDecision) {
+          return extensionDecision
+        }
+
         const commandResult = await maybeHandleFeishuControlCommand({
           message,
           autoReply,
