@@ -161,3 +161,24 @@ export function createAgentProfile({
     }
   }
 }
+
+export function getAliyunSeedProjects() {
+  return [
+    { project_key: 'uwillberich', name: '一博交易笔记' },
+    { project_key: 'munn111', name: '熊萌笔记' },
+    { project_key: 'deploy-hub', name: '部署中心' },
+    { project_key: 'acp-registry', name: 'ACP 注册中心' },
+    { project_key: 'gent-mesh', name: 'Gent Mesh' },
+    { project_key: 'novel-evolution', name: '小说进化' }
+  ]
+}
+
+export function getAliyunInfrastructureRegistry() {
+  return {
+    services: [
+      { name: 'nginx', port: 80 },
+      { name: 'pm2', services: ['newagent-manager', 'newagent-scrapling-worker', 'deploy-hub'] }
+    ],
+    ports: [80, 443, 3900, 7700, 7701, 8800, 8801]
+  }
+}
