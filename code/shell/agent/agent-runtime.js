@@ -21,12 +21,8 @@ import {
   buildAgentPlanningSystemPrompt,
   parseAgentPlanningResponse
 } from './agent-planner.js'
-import {
-  buildAgentQualityReviewPrompt,
-  buildAgentQualityReviewSystemPrompt,
-  parseAgentQualityReviewResponse
-} from './quality-review.js'
 import { createAgentExecutor } from './agent-executor.js'
+import { getSystemPrompt } from '../prompts/system-prompt-assembler.js'
 import { readJson, writeJsonAtomic } from '../../storage/json-files.js'
 
 const FEISHU_UNIFIED_CHANNEL_KEY = 'feishu-primary'
@@ -2060,8 +2056,6 @@ export function createAgentRuntime({
     try {
       const providerResult = await bailianProvider.invokeByIntent({
         intent: 'evaluate',
-        systemPrompt: buildAgentQualityReviewSystemPrompt(),
-        prompt: buildAgentQualityReviewPrompt({
           mode,
           operatorRequest,
           sessionSummary,
@@ -2075,7 +2069,6 @@ export function createAgentRuntime({
       })
 
       await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'external_quality_review_completed',
         actor: 'agent:reviewer',
         payload: {
           mode,
@@ -2088,7 +2081,6 @@ export function createAgentRuntime({
         at: nowIso()
       })
       await emitHook({
-        name: 'agent.quality_review.completed',
         sessionId,
         actor: 'agent:reviewer',
         payload: {
@@ -2120,7 +2112,6 @@ export function createAgentRuntime({
       }
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'external_quality_review_failed',
         actor: 'agent:reviewer',
         payload: {
           mode,
@@ -2129,7 +2120,6 @@ export function createAgentRuntime({
         at: nowIso()
       })
       await emitHook({
-        name: 'agent.quality_review.failed',
         sessionId,
         actor: 'agent:reviewer',
         payload: {
@@ -5007,7 +4997,7 @@ export function createAgentRuntime({
                   sessionId,
                   approvalId: pendingApproval.id,
                   currentInput: buildOperatorRequest(message),
-                  resolvedBy: 'manager:auto_report',
+                  resolvedBy: 'agent:auto_report',
                   resolutionNote: 'auto_execute_after_report',
                   abortSignal: feishuRunState?.abort_controller?.signal ?? null
                 })

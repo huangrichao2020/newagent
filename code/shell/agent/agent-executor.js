@@ -453,7 +453,7 @@ function latestManagerProjectKeys(snapshot) {
   for (let index = snapshot.timeline.length - 1; index >= 0; index -= 1) {
     const event = snapshot.timeline[index]
 
-    if (event.kind === 'manager_plan_generated') {
+    if (event.kind === 'agent_plan_generated') {
       return Array.isArray(event.payload?.project_keys)
         ? event.payload.project_keys
         : []
@@ -1408,7 +1408,7 @@ function summarizeRecentAgentExecution(snapshot) {
     .filter(Boolean)
 }
 
-function buildManagerReportText(snapshot) {
+function buildAgentReportText(snapshot) {
   const lines = []
   const completedSteps = summarizeCompletedAgentSteps(snapshot)
   const executionHighlights = summarizeRecentAgentExecution(snapshot)
@@ -1519,14 +1519,14 @@ export function createAgentExecutor({
     }
   }
 
-  async function executeManagerReportStep({
+  async function executeAgentReportStep({
     sessionId,
     step
   }) {
     await sessionStore.startPlanStep(sessionId, step.id)
 
     const runningSnapshot = await sessionStore.loadSession(sessionId)
-    const reportText = buildManagerReportText(runningSnapshot)
+    const reportText = buildAgentReportText(runningSnapshot)
 
     await sessionStore.appendTimelineEvent(sessionId, {
       stepId: step.id,
@@ -1644,7 +1644,7 @@ export function createAgentExecutor({
     }
 
     if (selection.action === 'report') {
-      const execution = await executeManagerReportStep({
+      const execution = await executeAgentReportStep({
         sessionId,
         step
       })

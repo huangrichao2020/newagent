@@ -19,7 +19,7 @@ import {
   describeFeishuChannelConfig
 } from '../channels/feishu/feishu-gateway.js'
 import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
-import { createAgentRuntime } from '../agent/agent-runtime.js'
+import { createMultiAgentRuntime } from '../agents/multi-agent-runtime.js'
 import { createAgentExecutor } from '../agent/agent-executor.js'
 
 const DEFAULT_STORAGE_ROOT = resolve(
@@ -423,7 +423,7 @@ export async function executeCli({
     }
 
     if (command === 'agent bootstrap') {
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
@@ -441,7 +441,7 @@ export async function executeCli({
     if (command === 'agent feishu-serve') {
       const feishuGateway =
         dependencies.feishuGateway ?? feishuGatewayFactory()
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway,
         bailianProvider,
@@ -473,7 +473,7 @@ export async function executeCli({
     }
 
     if (command === 'agent intake-message') {
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
@@ -671,7 +671,7 @@ export async function executeCli({
 
     if (command === 'coworker ask') {
       const sessionId = requireOption(options, 'session-id')
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
@@ -808,7 +808,7 @@ export async function executeCli({
     }
 
     if (command === 'coworker reply') {
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,

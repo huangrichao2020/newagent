@@ -8,7 +8,7 @@ import { createSessionStore } from '../session/session-store.js'
 import { createCoworkerStore } from '../coworkers/coworker-store.js'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createHookBus } from '../hooks/hook-bus.js'
-import { createAgentProfile } from '../manager/agent-profile.js'
+import { createAgentProfile } from '../agent/agent-profile.js'
 
 async function createStorageRoot() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-cli-'))
