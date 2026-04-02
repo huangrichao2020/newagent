@@ -54,6 +54,7 @@ test('profile show returns the remote server manager defaults', async () => {
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.command, 'profile show')
   assert.equal(payload.profile.channels.primary.type, 'feishu')
+  assert.equal(payload.profile.channels.coworker.type, 'ssh-channel')
   assert.equal(payload.profile.model_routing.planner.model, 'codingplan')
   assert.equal(payload.profile.model_routing.execution.model, 'qwen3.5-plus')
 })
@@ -696,6 +697,118 @@ test('hooks list returns filtered hook events through the CLI', async () => {
   assert.equal(payload.command, 'hooks list')
   assert.equal(payload.events.length, 1)
   assert.equal(payload.events[0].name, 'manager.planning.completed')
+})
+
+test('coworker ask and coworker reply create a Mac-local Codex roundtrip through the CLI', async () => {
+  const storageRoot = await createStorageRoot()
+  const store = createStore(storageRoot)
+  const created = await store.createSession({
+    title: 'Codex coworker roundtrip',
+    projectKey: 'newagent',
+    userRequest: 'Need one Codex review'
+  })
+
+  const asked = await executeCli({
+    argv: [
+      'coworker',
+      'ask',
+      '--storage-root',
+      storageRoot,
+      '--session-id',
+      created.session.id,
+      '--question',
+      '请帮我确认 ssh-channel 的最小实现。',
+      '--title',
+      'Need one ssh-channel review',
+      '--json'
+    ]
+  })
+
+  assert.equal(asked.exitCode, 0)
+
+  const askedPayload = JSON.parse(asked.stdout)
+  assert.equal(askedPayload.command, 'coworker ask')
+  assert.equal(askedPayload.request.target, 'codex_mac_local')
+
+  const replied = await executeCli({
+    argv: [
+      'coworker',
+      'reply',
+      '--storage-root',
+      storageRoot,
+      '--request-id',
+      askedPayload.request.id,
+      '--answer',
+      '先用远端存储加本机长轮询即可，不用先做真双向 socket。',
+      '--json'
+    ]
+  })
+  const loaded = await store.loadSession(created.session.id)
+
+  assert.equal(replied.exitCode, 0)
+
+  const repliedPayload = JSON.parse(replied.stdout)
+  assert.equal(repliedPayload.command, 'coworker reply')
+  assert.equal(repliedPayload.request.status, 'resolved')
+  assert.ok(loaded.timeline.some((event) => event.kind === 'coworker_request_created'))
+  assert.ok(loaded.timeline.some((event) => event.kind === 'coworker_request_resolved'))
+  assert.ok(loaded.timeline.some((event) => event.kind === 'memory_written'))
+})
+
+test('coworker wait can long-poll for the next pending Mac-local Codex request', async () => {
+  const storageRoot = await createStorageRoot()
+  const store = createStore(storageRoot)
+  const created = await store.createSession({
+    title: 'Codex coworker wait',
+    projectKey: 'newagent',
+    userRequest: 'Wait for a Codex request'
+  })
+
+  const waiter = executeCli({
+    argv: [
+      'coworker',
+      'wait',
+      '--storage-root',
+      storageRoot,
+      '--target',
+      'codex_mac_local',
+      '--claim-by',
+      'codex_mac_local',
+      '--location',
+      'mac_local_codex',
+      '--timeout-ms',
+      '400',
+      '--poll-interval-ms',
+      '20',
+      '--json'
+    ]
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 50))
+
+  await executeCli({
+    argv: [
+      'coworker',
+      'ask',
+      '--storage-root',
+      storageRoot,
+      '--session-id',
+      created.session.id,
+      '--question',
+      '请帮我看一下这轮 attention 机制。',
+      '--json'
+    ]
+  })
+
+  const waited = await waiter
+
+  assert.equal(waited.exitCode, 0)
+
+  const payload = JSON.parse(waited.stdout)
+  assert.equal(payload.command, 'coworker wait')
+  assert.equal(payload.timed_out, false)
+  assert.equal(payload.request.status, 'claimed')
+  assert.equal(payload.request.claimed_by, 'codex_mac_local')
 })
 
 test('missing required arguments returns a non-zero result with a clear error', async () => {

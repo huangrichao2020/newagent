@@ -6,6 +6,7 @@ import {
   extractFeedbackMemoryCandidates,
   prioritizeFeedbackEntries
 } from '../memory/feedback-memory.js'
+import { createCoworkerStore } from '../coworkers/coworker-store.js'
 import { createHookBus } from '../hooks/hook-bus.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createInfrastructureRegistry } from '../registry/infrastructure-registry.js'
@@ -39,6 +40,8 @@ const DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS = 10 * 1000
 const DEFAULT_FEISHU_FINAL_TIMEOUT_MS = 6 * 60 * 1000
 const DEFAULT_BACKGROUND_PRECOMPUTE_INTERVAL_MS = 3 * 60 * 1000
 const DEFAULT_BACKGROUND_PRECOMPUTE_TRIGGER_DELAY_MS = 150
+const DEFAULT_CODEX_COWORKER_TARGET = 'codex_mac_local'
+const DEFAULT_CODEX_COWORKER_LOCATION = 'mac_local_codex'
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
@@ -1402,6 +1405,10 @@ function shouldUseFeishuConversationReply({
     return false
   }
 
+  if (looksLikeFeishuSelfReflectionQuestion(request)) {
+    return true
+  }
+
   const looksLikeQuestion = /[?？]$/.test(request)
   const looksLikeMetaFollowUp = /^(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|哪里改了|做到哪了|现在呢|上面那个)/u.test(request)
     || /(是不是|有没有|为啥|为什么|怎么回事|什么情况|改了哪里|做到哪了|你刚刚|你上面|这个意思|这次改动|大改)/u.test(request)
@@ -1412,6 +1419,77 @@ function shouldUseFeishuConversationReply({
   }
 
   return (looksLikeQuestion || looksLikeMetaFollowUp) && !looksLikeNewTask && request.length <= 48
+}
+
+function looksLikeFeishuSelfReflectionQuestion(request) {
+  const normalized = cleanText(request)
+
+  if (!normalized) {
+    return false
+  }
+
+  const mentionsAgent = /(你|小云|你的|你现在|你刚刚|你自己)/u.test(normalized)
+  const selfTopics = /(阿里云|服务器|跑在|跑在哪|部署位置|创建过程|codex|mac|电脑|同事|改造|赋能|新特性|升级|增强|改了什么|做了什么|变得更好|现在会什么|能力|想想是哪些|知道的吧)/iu.test(normalized)
+
+  return mentionsAgent && selfTopics
+}
+
+function collectFeishuSelfReflectionHighlights(managerProfile) {
+  const highlights = [
+    '飞书回复更重排版：简单问题短回，复杂任务会持续反馈，最终结果优先 Markdown / 卡片。',
+    '连续消息更自然：短时间内连续几句会先合并，处理中追加的话会顺序排队。',
+    '时限机制更明确：30 秒先反馈，3 分钟申请更多时间，10 秒默认继续，6 分钟最终停下。',
+    '注意力机制更严格：当前消息最高优先，引用楼层次优先，旧 assistant 回复和历史噪音靠后。',
+    '基础设施 registry 已接进规划链，项目 / 服务 / 路由不再全靠猜。'
+  ]
+
+  if (managerProfile.background_precompute?.enabled) {
+    highlights.push('空闲时会用免费模型做轻量预制，提前准备关注点、可能追问和 ready replies。')
+  }
+
+  if (managerProfile.external_review?.enabled) {
+    highlights.push(`外部第二裁判已接入，evaluation 会走 ${managerProfile.external_review.model} 做复核。`)
+  }
+
+  return highlights
+}
+
+function buildFeishuSelfReflectionReply({
+  request,
+  managerProfile,
+  preparedContext = null
+}) {
+  const askAboutLocation = /(阿里云|服务器|跑在|跑在哪|部署位置)/u.test(request)
+  const askAboutCodex = /(codex|mac|电脑|同事)/iu.test(request)
+  const askAboutChanges = /(改造|赋能|新特性|升级|增强|改了什么|做了什么|哪些|变得更好|现在会什么|能力)/u.test(request)
+  const lines = ['记得。']
+
+  if (askAboutLocation) {
+    lines.push('你一直把我放在阿里云服务器上跑，主交互通道是飞书长连接。')
+  }
+
+  if (askAboutCodex) {
+    lines.push('你这台 Mac 上的 Codex 一直在帮我做设计、修正和加能力，它就是我最特殊的外部同事。')
+  }
+
+  if (askAboutChanges || (!askAboutLocation && !askAboutCodex)) {
+    lines.push('')
+    lines.push('### 我现在能明确确认的升级')
+
+    for (const highlight of collectFeishuSelfReflectionHighlights(managerProfile)) {
+      lines.push(`- ${highlight}`)
+    }
+  }
+
+  if (preparedContext?.summary) {
+    lines.push('')
+    lines.push(`当前我对自己这轮变化的核心理解是：${preparedContext.summary}`)
+  }
+
+  lines.push('')
+  lines.push('如果你现在要我只用一句话复述，我会说：回复更像人、上下文更会接、后台也开始提前准备了。')
+
+  return lines.join('\n')
 }
 
 function shouldUseConversationCard(replyText) {
@@ -1476,6 +1554,7 @@ export function createServerManagerRuntime({
 }) {
   const sessionStore = createSessionStore({ storageRoot })
   const memoryStore = createMemoryStore({ storageRoot })
+  const coworkerStore = createCoworkerStore({ storageRoot })
   const runtimeHookBus = hookBus ?? createHookBus({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
   const infrastructureRegistry = createInfrastructureRegistry({ storageRoot })
@@ -1905,6 +1984,131 @@ export function createServerManagerRuntime({
       project_count: bootstrap.seeded_project_count,
       infra_project_count: bootstrap.seeded_infra_project_count
     }
+  }
+
+  async function requestCoworkerHelp({
+    sessionId,
+    source = 'newagent-manager',
+    target = DEFAULT_CODEX_COWORKER_TARGET,
+    title = null,
+    question,
+    context = null,
+    urgency = 'normal',
+    tags = [],
+    location = DEFAULT_CODEX_COWORKER_LOCATION
+  }) {
+    if (!sessionId) {
+      throw new Error('Missing required field: sessionId')
+    }
+
+    const snapshot = await sessionStore.loadSession(sessionId)
+    const request = await coworkerStore.createRequest({
+      sessionId,
+      source,
+      target,
+      title: cleanText(title) || `Need Codex help for ${snapshot.task.title}`,
+      question,
+      context,
+      urgency,
+      tags: uniqueStringValues([
+        'coworker',
+        'ssh-channel',
+        'codex',
+        ...tags
+      ]),
+      location
+    })
+
+    await sessionStore.appendTimelineEvent(sessionId, {
+      kind: 'coworker_request_created',
+      actor: 'manager:runtime',
+      payload: {
+        request_id: request.id,
+        source: request.source,
+        target: request.target,
+        title: request.title,
+        urgency: request.urgency,
+        location: request.location,
+        status: request.status
+      }
+    })
+    await emitHook({
+      name: 'coworker.request.created',
+      sessionId,
+      channel: request.channel,
+      actor: 'manager:runtime',
+      payload: {
+        request_id: request.id,
+        source: request.source,
+        target: request.target,
+        title: request.title,
+        urgency: request.urgency,
+        location: request.location,
+        session_summary: snapshot.session.summary ?? null
+      }
+    })
+
+    return request
+  }
+
+  async function resolveCoworkerRequest({
+    requestId,
+    answer,
+    resolvedBy = DEFAULT_CODEX_COWORKER_TARGET,
+    resolution = 'answered',
+    location = DEFAULT_CODEX_COWORKER_LOCATION,
+    writeMemory = true
+  }) {
+    if (!requestId) {
+      throw new Error('Missing required field: requestId')
+    }
+
+    const resolved = await coworkerStore.resolveRequest(requestId, {
+      answer,
+      resolvedBy,
+      resolution,
+      location
+    })
+
+    if (resolved.session_id) {
+      await sessionStore.appendTimelineEvent(resolved.session_id, {
+        kind: 'coworker_request_resolved',
+        actor: 'coworker:codex',
+        payload: {
+          request_id: resolved.id,
+          target: resolved.target,
+          resolved_by: resolved.resolved_by,
+          resolution: resolved.resolution,
+          location: resolved.location
+        }
+      })
+
+      if (writeMemory) {
+        await memoryStore.addMemoryEntry({
+          sessionId: resolved.session_id,
+          scope: 'session',
+          kind: 'decision',
+          content: `Mac-local Codex replied: ${resolved.answer}`,
+          tags: ['coworker_reply', 'codex', 'ssh-channel']
+        })
+      }
+
+      await emitHook({
+        name: 'coworker.request.resolved',
+        sessionId: resolved.session_id,
+        channel: resolved.channel,
+        actor: 'coworker:codex',
+        payload: {
+          request_id: resolved.id,
+          target: resolved.target,
+          resolved_by: resolved.resolved_by,
+          resolution: resolved.resolution,
+          location: resolved.location
+        }
+      })
+    }
+
+    return resolved
   }
 
   async function ensureFeishuUnifiedSessionTurn(message) {
@@ -2427,8 +2631,21 @@ export function createServerManagerRuntime({
     snapshot,
     attentionContext
   }) {
+    const request = cleanText(buildOperatorRequest(message))
     const preparedContext = await loadPreparedFeishuContext(sessionId)
     const preparedReply = matchPreparedReply(message, preparedContext)
+
+    if (looksLikeFeishuSelfReflectionQuestion(request)) {
+      return {
+        text: buildFeishuSelfReflectionReply({
+          request,
+          managerProfile,
+          preparedContext
+        }),
+        source: 'self_reflection',
+        prepared_context: preparedContext
+      }
+    }
 
     if (preparedReply) {
       return {
@@ -4574,6 +4791,8 @@ export function createServerManagerRuntime({
     ensureServerBaseline,
     planSession,
     handleChannelMessage,
+    requestCoworkerHelp,
+    resolveCoworkerRequest,
     runFeishuMaintenanceOnce,
     runFeishuBackgroundPrecomputeOnce,
     startFeishuLoop

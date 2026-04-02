@@ -39,6 +39,31 @@ test('buildManagerQualityReviewPrompt includes plan review context', () => {
   assert.match(prompt, /deploy-hub 正常/)
 })
 
+test('buildManagerQualityReviewPrompt shows 1-based depends_on references to the reviewer', () => {
+  const prompt = buildManagerQualityReviewPrompt({
+    mode: 'plan_review',
+    plan: {
+      summary: '检查步骤依赖',
+      steps: [
+        {
+          title: '第一步',
+          kind: 'inspect',
+          dependsOn: []
+        },
+        {
+          title: '第二步',
+          kind: 'inspect',
+          dependsOn: [0]
+        }
+      ]
+    }
+  })
+
+  assert.match(prompt, /"depends_on": \[\]/)
+  assert.match(prompt, /"depends_on": \[\s*1\s*\]/)
+  assert.doesNotMatch(prompt, /"dependsOn": \[\s*0\s*\]/)
+})
+
 test('parseManagerQualityReviewResponse normalizes verdict and arrays', () => {
   const review = parseManagerQualityReviewResponse({
     text: JSON.stringify({

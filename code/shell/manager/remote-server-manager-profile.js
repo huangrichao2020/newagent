@@ -51,6 +51,16 @@ export function createRemoteServerManagerProfile({
   )
   const openrouterSiteUrl = readStringEnv(env, 'NEWAGENT_OPENROUTER_SITE_URL', null)
   const openrouterAppName = readStringEnv(env, 'NEWAGENT_OPENROUTER_APP_NAME', 'newagent')
+  const enableBackgroundPrecompute = readBooleanEnv(
+    env,
+    'NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE',
+    enableExternalReview
+  )
+  const backgroundPrecomputeModel = readStringEnv(
+    env,
+    'NEWAGENT_BACKGROUND_PRECOMPUTE_MODEL',
+    externalReviewModel
+  )
 
   return {
     agent_key: 'remote-server-manager',
@@ -61,6 +71,13 @@ export function createRemoteServerManagerProfile({
         type: 'feishu',
         connection_mode: 'long_connection',
         remote_relay_required: false
+      },
+      coworker: {
+        type: 'ssh-channel',
+        connection_mode: 'duplex_long_poll',
+        remote_relay_required: false,
+        target: 'codex_mac_local',
+        location: 'mac_local_codex'
       }
     },
     model_routing: {
@@ -103,12 +120,28 @@ export function createRemoteServerManagerProfile({
           'HTTP-Referer': openrouterSiteUrl,
           'X-OpenRouter-Title': openrouterAppName
         }
+      },
+      background: {
+        provider: 'openrouter',
+        model: backgroundPrecomputeModel,
+        api_key_env: 'OPENROUTER_API_KEY',
+        fallback_api_key_envs: ['NEWAGENT_OPENROUTER_API_KEY'],
+        base_url_env: 'NEWAGENT_OPENROUTER_BASE_URL',
+        base_url_default: 'https://openrouter.ai/api/v1',
+        extra_headers: {
+          'HTTP-Referer': openrouterSiteUrl,
+          'X-OpenRouter-Title': openrouterAppName
+        }
       }
     },
     external_review: {
       enabled: enableExternalReview,
       enforcing: enforceExternalReview,
       model: externalReviewModel
+    },
+    background_precompute: {
+      enabled: enableBackgroundPrecompute,
+      model: backgroundPrecomputeModel
     },
     codex_integration: {
       allow_review: allowReview,

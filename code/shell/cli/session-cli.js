@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { createSessionStore } from '../session/session-store.js'
 import { createContextRouter } from '../context/context-router.js'
 import { createMemoryStore } from '../memory/memory-store.js'
+import { createCoworkerStore } from '../coworkers/coworker-store.js'
 import { createHookBus } from '../hooks/hook-bus.js'
 import { createStepExecutor } from '../executor/step-executor.js'
 import { createDebugRuntime } from '../debug/debug-runtime.js'
@@ -162,6 +163,17 @@ function formatText(command, payload) {
   return JSON.stringify(payload, null, 2)
 }
 
+function waitForMs(durationMs) {
+  if (durationMs == null || durationMs <= 0) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, durationMs)
+    timer?.unref?.()
+  })
+}
+
 export async function executeCli({
   argv,
   stdout = '',
@@ -175,6 +187,7 @@ export async function executeCli({
     const store = createSessionStore({ storageRoot })
     const contextRouter = createContextRouter({ storageRoot })
     const memoryStore = createMemoryStore({ storageRoot })
+    const coworkerStore = createCoworkerStore({ storageRoot })
     const hookBus = createHookBus({ storageRoot })
     const debugRuntime = createDebugRuntime({ storageRoot })
     const projectRegistry = createProjectRegistry({ storageRoot })
@@ -576,6 +589,156 @@ export async function executeCli({
           name: options.name ?? null,
           channel: options.channel ?? null,
           events
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'coworker ask') {
+      const sessionId = requireOption(options, 'session-id')
+      const runtime = createServerManagerRuntime({
+        storageRoot,
+        feishuGateway: dependencies.feishuGateway ?? null,
+        bailianProvider,
+        managerProfile
+      })
+      const request = await runtime.requestCoworkerHelp({
+        sessionId,
+        source: options.source ?? 'newagent-manager',
+        target: options.target ?? 'codex_mac_local',
+        title: options.title ?? null,
+        question: requireOption(options, 'question'),
+        context: options.context ?? null,
+        urgency: options.urgency ?? 'normal',
+        tags: options.tags ? options.tags.split(',').filter(Boolean) : [],
+        location: options.location ?? 'mac_local_codex'
+      })
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          request
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'coworker list') {
+      const limit = options.limit ? Number.parseInt(options.limit, 10) : null
+
+      if (options.limit && (!Number.isInteger(limit) || limit <= 0)) {
+        throw new Error('Invalid --limit value')
+      }
+
+      const requests = await coworkerStore.listRequests({
+        sessionId: options['session-id'] ?? null,
+        source: options.source ?? null,
+        target: options.target ?? null,
+        status: options.status ?? null,
+        afterId: options['after-id'] ?? null,
+        limit
+      })
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          requests
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'coworker get') {
+      const request = await coworkerStore.getRequest(
+        requireOption(options, 'request-id')
+      )
+
+      if (!request) {
+        throw new Error(`Unknown coworker request: ${options['request-id']}`)
+      }
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          request
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'coworker wait') {
+      const target = requireOption(options, 'target')
+      const timeoutMs = options['timeout-ms']
+        ? Number.parseInt(options['timeout-ms'], 10)
+        : 30 * 1000
+      const pollIntervalMs = options['poll-interval-ms']
+        ? Number.parseInt(options['poll-interval-ms'], 10)
+        : 1000
+
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
+        throw new Error('Invalid --timeout-ms value')
+      }
+
+      if (!Number.isInteger(pollIntervalMs) || pollIntervalMs <= 0) {
+        throw new Error('Invalid --poll-interval-ms value')
+      }
+
+      const startedAt = Date.now()
+      let request = null
+
+      while (!request && Date.now() - startedAt <= timeoutMs) {
+        const requests = await coworkerStore.listRequests({
+          sessionId: options['session-id'] ?? null,
+          source: options.source ?? null,
+          target,
+          status: options.status ?? 'pending',
+          afterId: options['after-id'] ?? null,
+          limit: 1
+        })
+        request = requests[0] ?? null
+
+        if (!request) {
+          await waitForMs(pollIntervalMs)
+        }
+      }
+
+      if (request && options['claim-by']) {
+        request = await coworkerStore.claimRequest(request.id, {
+          claimedBy: options['claim-by'],
+          location: options.location ?? null
+        })
+      }
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          request,
+          timed_out: request == null
+        }, asJson),
+        stderr
+      }
+    }
+
+    if (command === 'coworker reply') {
+      const runtime = createServerManagerRuntime({
+        storageRoot,
+        feishuGateway: dependencies.feishuGateway ?? null,
+        bailianProvider,
+        managerProfile
+      })
+      const request = await runtime.resolveCoworkerRequest({
+        requestId: requireOption(options, 'request-id'),
+        answer: requireOption(options, 'answer'),
+        resolvedBy: options['resolved-by'] ?? 'codex_mac_local',
+        resolution: options.resolution ?? 'answered',
+        location: options.location ?? 'mac_local_codex',
+        writeMemory: options['write-memory'] !== 'false'
+      })
+
+      return {
+        exitCode: 0,
+        stdout: formatOutput(command, {
+          request
         }, asJson),
         stderr
       }

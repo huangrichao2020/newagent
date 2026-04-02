@@ -36,6 +36,16 @@ test('buildManagerPlanningSystemPrompt warns when Codex review and repair are di
   assert.match(prompt, /Do not emit repair steps/)
 })
 
+test('buildManagerPlanningSystemPrompt constrains change-summary requests and dependency numbering', () => {
+  const prompt = buildManagerPlanningSystemPrompt({
+    managerProfile: createRemoteServerManagerProfile()
+  })
+
+  assert.match(prompt, /what changed, what was upgraded/)
+  assert.match(prompt, /validates the claimed capability directly/)
+  assert.match(prompt, /depends_on uses 1-based step references/)
+})
+
 test('buildManagerPlanningPrompt includes the operator request and project inventory', () => {
   const prompt = buildManagerPlanningPrompt({
     message: {
@@ -95,6 +105,33 @@ test('buildManagerPlanningPrompt includes session continuity context when availa
   assert.match(prompt, /LONG-TERM MEMORY:/)
   assert.match(prompt, /RECENT TRANSCRIPT:/)
   assert.match(prompt, /继续查 uwillberich/)
+})
+
+test('buildManagerPlanningPrompt includes attention stack and prepared context when available', () => {
+  const prompt = buildManagerPlanningPrompt({
+    message: {
+      text: '是不是大改了，主要改了哪里？'
+    },
+    projects: getAliyunSeedProjects().slice(0, 1),
+    attentionContext: {
+      primary_reference: {
+        role: 'assistant',
+        content: '刚才我说这次主要改了超时机制和 registry。'
+      }
+    },
+    preparedContext: {
+      summary: '当前重点是回复超时、引用消息和后台预处理。',
+      operator_focuses: ['你这次到底改了什么', '现在做到哪了'],
+      likely_followups: ['改了哪里', '是不是大改'],
+      attention_rules: ['先回答当前问题，不要先倒项目表']
+    }
+  })
+
+  assert.match(prompt, /ATTENTION STACK:/)
+  assert.match(prompt, /当前正在回复的消息/)
+  assert.match(prompt, /超时机制和 registry/)
+  assert.match(prompt, /PREPARED CONTEXT:/)
+  assert.match(prompt, /不要先倒项目表/)
 })
 
 test('buildManagerPlanningPrompt includes service and route registry context when available', () => {
@@ -164,4 +201,35 @@ test('parseManagerPlanningResponse normalizes a fenced JSON plan', () => {
   assert.equal(plan.project_keys[0], 'uwillberich')
   assert.equal(plan.steps.length, 2)
   assert.deepEqual(plan.steps[1].dependsOn, [0])
+})
+
+test('parseManagerPlanningResponse drops invalid or future dependency references', () => {
+  const plan = parseManagerPlanningResponse({
+    text: JSON.stringify({
+      summary: '测试依赖关系清洗。',
+      project_keys: ['uwillberich'],
+      operator_reply: '先校正 steps。',
+      steps: [
+        {
+          title: '第一步',
+          kind: 'inspect',
+          depends_on: []
+        },
+        {
+          title: '第二步',
+          kind: 'inspect',
+          depends_on: [1, 9]
+        },
+        {
+          title: '第三步',
+          kind: 'inspect',
+          depends_on: [0, 1, 2, 8]
+        }
+      ]
+    }),
+    availableProjects: getAliyunSeedProjects()
+  })
+
+  assert.deepEqual(plan.steps[1].dependsOn, [0])
+  assert.deepEqual(plan.steps[2].dependsOn, [0, 1])
 })

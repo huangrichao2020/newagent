@@ -58,6 +58,26 @@ function normalizeVerdict(value, fallback = 'pass') {
   return fallback
 }
 
+function serializePlanForReview(plan) {
+  if (!plan) {
+    return null
+  }
+
+  return {
+    ...plan,
+    steps: Array.isArray(plan.steps)
+      ? plan.steps.map((step) => ({
+          title: step.title ?? null,
+          kind: step.kind ?? null,
+          notes: step.notes ?? null,
+          depends_on: Array.isArray(step.dependsOn)
+            ? step.dependsOn.map((dependency) => dependency + 1)
+            : []
+        }))
+      : []
+  }
+}
+
 export function buildManagerQualityReviewSystemPrompt() {
   return buildPromptContract({
     sections: [
@@ -145,7 +165,7 @@ export function buildManagerQualityReviewPrompt({
     sections.push({
       title: 'CANDIDATE PLAN',
       bullet: false,
-      lines: [JSON.stringify(plan, null, 2)]
+      lines: [JSON.stringify(serializePlanForReview(plan), null, 2)]
     })
   }
 

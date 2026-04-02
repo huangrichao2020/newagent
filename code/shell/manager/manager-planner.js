@@ -54,7 +54,7 @@ function normalizeSteps(rawSteps) {
     return []
   }
 
-  return rawSteps
+  const draftSteps = rawSteps
     .map((step, index) => {
       const title = cleanString(step?.title)
 
@@ -97,6 +97,29 @@ function normalizeSteps(rawSteps) {
     })
     .filter(Boolean)
     .slice(0, 8)
+
+  return draftSteps.map((step, index) => ({
+    ...step,
+    dependsOn: [...new Set(
+      step.dependsOn
+        .map((dependency) => {
+          if (typeof dependency === 'number' && Number.isInteger(dependency)) {
+            return dependency
+          }
+
+          if (typeof dependency === 'string') {
+            const asNumber = Number.parseInt(dependency, 10)
+
+            if (Number.isInteger(asNumber)) {
+              return asNumber
+            }
+          }
+
+          return null
+        })
+        .filter((dependency) => dependency != null && dependency >= 0 && dependency < index)
+    )]
+  }))
 }
 
 export function buildManagerPlanningSystemPrompt({ managerProfile }) {
@@ -104,10 +127,14 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     'project_keys must only contain known project keys from the provided inventory.',
     'steps must be concrete and ordered.',
     'prefer 2 to 5 steps.',
-    'operator_reply must be concise, in Chinese, and mention the key project names when relevant.',
+    'operator_reply must answer the operator directly, in natural Chinese, and mention key project names only when relevant.',
+    'Use the project, service, and route inventories as grounding only; do not dump paths, ports, URLs, routes, or shell commands unless the operator explicitly asks for them.',
     'When operator preferences or operating rules are provided, follow them explicitly.',
     'When recent transcript or long-term memory is provided, preserve continuity with prior turns.',
-    'If the request is ambiguous, include an initial inspection step instead of guessing.'
+    'If the request is ambiguous, include an initial inspection step instead of guessing.',
+    'If the operator is asking what changed, what was upgraded, or what new capabilities were added, do not pivot to unrelated service-health checks.',
+    'When the operator asks to verify or assess recent changes, include at least one step that validates the claimed capability directly instead of only checking generic runtime health.',
+    'depends_on uses 1-based step references in the JSON output and must only point to earlier steps.'
   ]
 
   if (!managerProfile.codex_integration.allow_review) {
@@ -168,7 +195,9 @@ export function buildManagerPlanningPrompt({
   longTermMemory = [],
   recentTranscript = [],
   serviceInventory = [],
-  routeInventory = []
+  routeInventory = [],
+  attentionContext = null,
+  preparedContext = null
 }) {
   const inventory = projects
     .map((project) => [
@@ -187,6 +216,19 @@ export function buildManagerPlanningPrompt({
     ?? JSON.stringify(message.content ?? message.raw_content ?? {})
 
   const sections = [
+    attentionContext
+      ? {
+          title: 'ATTENTION STACK',
+          bullet: false,
+          lines: [
+            'highest_priority: 当前 operator 消息',
+            attentionContext.primary_reference
+              ? `secondary_priority: 当前正在回复的消息 [${attentionContext.primary_reference.role}] ${attentionContext.primary_reference.content}`
+              : 'secondary_priority: 无显式引用消息，本轮按当前消息单独理解',
+            'lower_priority: 历史 assistant 回复、最近转录、长期记忆都只是辅助上下文'
+          ]
+        }
+      : null,
     {
       title: 'PROJECT INVENTORY',
       bullet: false,
@@ -198,6 +240,25 @@ export function buildManagerPlanningPrompt({
       lines: [operatorRequest]
     }
   ]
+
+  if (preparedContext) {
+    sections.push({
+      title: 'PREPARED CONTEXT',
+      bullet: false,
+      lines: [
+        preparedContext.summary ? `summary: ${preparedContext.summary}` : null,
+        Array.isArray(preparedContext.operator_focuses) && preparedContext.operator_focuses.length > 0
+          ? `operator_focuses: ${preparedContext.operator_focuses.join('；')}`
+          : null,
+        Array.isArray(preparedContext.likely_followups) && preparedContext.likely_followups.length > 0
+          ? `likely_followups: ${preparedContext.likely_followups.join('；')}`
+          : null,
+        Array.isArray(preparedContext.attention_rules) && preparedContext.attention_rules.length > 0
+          ? `attention_rules: ${preparedContext.attention_rules.join('；')}`
+          : null
+      ]
+    })
+  }
 
   if (sessionSummary) {
     sections.push({
