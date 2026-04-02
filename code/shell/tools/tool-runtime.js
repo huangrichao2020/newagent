@@ -9,7 +9,7 @@ import { createDebugRuntime } from '../debug/debug-runtime.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createInfrastructureRegistry } from '../registry/infrastructure-registry.js'
 import { createNewsSourceRegistry } from '../registry/news-source-registry.js'
-import { createAgentProfile } from '../manager/agent-profile.js'
+import { createAgentProfile } from '../agent/agent-profile.js'
 import {
   createFeishuApiClient,
   describeFeishuChannelConfig
