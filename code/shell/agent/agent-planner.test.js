@@ -4,15 +4,15 @@ import {
   buildManagerPlanningPrompt,
   buildManagerPlanningSystemPrompt,
   parseManagerPlanningResponse
-} from './manager-planner.js'
+} from './agent-planner.js'
 import {
-  createRemoteServerManagerProfile,
+  createAgentProfile,
   getAliyunSeedProjects
-} from './remote-server-manager-profile.js'
+} from './agent-profile.js'
 
 test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', () => {
   const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createRemoteServerManagerProfile()
+    managerProfile: createAgentProfile()
   })
 
   assert.match(prompt, /ROLE:/)
@@ -25,7 +25,7 @@ test('buildManagerPlanningSystemPrompt returns the JSON-only planner contract', 
 
 test('buildManagerPlanningSystemPrompt frames the default loop as a generic agent with project skills', () => {
   const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createRemoteServerManagerProfile()
+    managerProfile: createAgentProfile()
   })
 
   assert.match(prompt, /Use project and server capabilities only when the request truly needs them/)
@@ -36,7 +36,7 @@ test('buildManagerPlanningSystemPrompt frames the default loop as a generic agen
 
 test('buildManagerPlanningSystemPrompt constrains change-summary requests and dependency numbering', () => {
   const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createRemoteServerManagerProfile()
+    managerProfile: createAgentProfile()
   })
 
   assert.match(prompt, /what changed, what was upgraded/)
@@ -50,7 +50,7 @@ test('buildManagerPlanningSystemPrompt constrains change-summary requests and de
 
 test('buildManagerPlanningSystemPrompt narrows capability routing for weather and Feishu workspace requests', () => {
   const prompt = buildManagerPlanningSystemPrompt({
-    managerProfile: createRemoteServerManagerProfile()
+    managerProfile: createAgentProfile()
   })
 
   assert.match(prompt, /Do not route generic external data work through unrelated capability packs/)

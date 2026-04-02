@@ -12,21 +12,21 @@ import { createProjectRegistry } from '../projects/project-registry.js'
 import { createInfrastructureRegistry } from '../registry/infrastructure-registry.js'
 import { buildPromptContract } from '../prompts/prompt-contract.js'
 import {
-  createRemoteServerManagerProfile,
+  createAgentProfile,
   getAliyunInfrastructureRegistry,
   getAliyunSeedProjects
-} from './remote-server-manager-profile.js'
+} from './agent-profile.js'
 import {
-  buildManagerPlanningPrompt,
-  buildManagerPlanningSystemPrompt,
-  parseManagerPlanningResponse
-} from './manager-planner.js'
+  buildAgentPlanningPrompt,
+  buildAgentPlanningSystemPrompt,
+  parseAgentPlanningResponse
+} from './agent-planner.js'
 import {
-  buildManagerQualityReviewPrompt,
-  buildManagerQualityReviewSystemPrompt,
-  parseManagerQualityReviewResponse
+  buildAgentQualityReviewPrompt,
+  buildAgentQualityReviewSystemPrompt,
+  parseAgentQualityReviewResponse
 } from './quality-review.js'
-import { createManagerExecutor } from './manager-executor.js'
+import { createAgentExecutor } from './agent-executor.js'
 import { readJson, writeJsonAtomic } from '../../storage/json-files.js'
 
 const FEISHU_UNIFIED_CHANNEL_KEY = 'feishu-primary'
@@ -97,7 +97,7 @@ function buildSingleOperatorRequest(message) {
 
 function buildOperatorTitle(message) {
   const sender = message.sender_open_id ?? message.sender_user_id ?? 'operator'
-  return `Remote manager request from ${sender}`
+  return `Remote agent request from ${sender}`
 }
 
 function buildOperatorRequest(message) {
@@ -170,7 +170,7 @@ function buildLightweightPingReply() {
   return '在，有事直接说。'
 }
 
-function summarizeManagerRuns(runs = []) {
+function summarizeAgentRuns(runs = []) {
   return runs
     .map((run) => run.summary)
     .filter(Boolean)
@@ -1138,7 +1138,7 @@ function createRecurringTask({
   }
 }
 
-function buildManagerCompactionSystemPrompt() {
+function buildAgentCompactionSystemPrompt() {
   return buildPromptContract({
     sections: [
       {
@@ -1150,7 +1150,7 @@ function buildManagerCompactionSystemPrompt() {
       {
         title: 'TASK',
         lines: [
-          'Preserve operational continuity for a single long-running manager session.',
+          'Preserve operational continuity for a single long-running agent session.',
           'Carry forward durable facts, open loops, preferences, and the latest working state.'
         ]
       },
@@ -1181,7 +1181,7 @@ function buildManagerCompactionSystemPrompt() {
   })
 }
 
-function buildManagerCompactionPrompt({
+function buildAgentCompactionPrompt({
   sessionSummary = null,
   storedMemory = null,
   transcriptLines = []
@@ -1255,7 +1255,7 @@ function normalizeCompactionItems(items) {
   )].slice(0, 8)
 }
 
-function parseManagerCompactionResponse({ text }) {
+function parseAgentCompactionResponse({ text }) {
   const parsed = JSON.parse(extractJsonObject(text))
   const summary = cleanText(parsed.summary)
 
@@ -1641,7 +1641,7 @@ function looksLikeFeishuSelfReflectionQuestion(request) {
   return mentionsAgent && selfTopics
 }
 
-function collectFeishuSelfReflectionHighlights(managerProfile) {
+function collectFeishuSelfReflectionHighlights(agentProfile) {
   const highlights = [
     '飞书回复更重排版：简单问题短回，复杂任务会持续反馈，最终结果优先 Markdown / 卡片。',
     '连续消息更自然：短时间内连续几句会先合并，处理中追加的话会顺序排队。',
@@ -1650,12 +1650,12 @@ function collectFeishuSelfReflectionHighlights(managerProfile) {
     '基础设施 registry 已接进规划链，项目 / 服务 / 路由不再全靠猜。'
   ]
 
-  if (managerProfile.background_precompute?.enabled) {
+  if (agentProfile.background_precompute?.enabled) {
     highlights.push('空闲时会用免费模型做轻量预制，提前准备关注点、可能追问和 ready replies。')
   }
 
-  if (managerProfile.external_review?.enabled) {
-    highlights.push(`外部第二裁判已接入，evaluation 会走 ${managerProfile.external_review.model} 做复核。`)
+  if (agentProfile.external_review?.enabled) {
+    highlights.push(`外部第二裁判已接入，evaluation 会走 ${agentProfile.external_review.model} 做复核。`)
   }
 
   return highlights
@@ -1663,7 +1663,7 @@ function collectFeishuSelfReflectionHighlights(managerProfile) {
 
 function buildFeishuSelfReflectionReply({
   request,
-  managerProfile,
+  agentProfile,
   preparedContext = null
 }) {
   const askAboutLocation = /(阿里云|服务器|跑在|跑在哪|部署位置)/u.test(request)
@@ -1683,7 +1683,7 @@ function buildFeishuSelfReflectionReply({
     lines.push('')
     lines.push('### 我现在能明确确认的升级')
 
-    for (const highlight of collectFeishuSelfReflectionHighlights(managerProfile)) {
+    for (const highlight of collectFeishuSelfReflectionHighlights(agentProfile)) {
       lines.push(`- ${highlight}`)
     }
   }
@@ -1739,15 +1739,15 @@ function matchPreparedReply(message, preparedContext) {
   return bestMatch.item
 }
 
-export function createServerManagerRuntime({
+export function createAgentRuntime({
   storageRoot,
   feishuGateway = null,
   bailianProvider = null,
   hookBus = null,
   workspaceRoot = process.cwd(),
   fetchFn = globalThis.fetch,
-  managerProfile = createRemoteServerManagerProfile(),
-  managerExecutor: injectedManagerExecutor = null,
+  agentProfile = createAgentProfile(),
+  agentExecutor: injectedAgentExecutor = null,
   progressReplyDelayMs = 2000,
   longRunningFeedbackMs = DEFAULT_FEISHU_LONG_RUNNING_FEEDBACK_MS,
   longRunningCheckpointMs = DEFAULT_FEISHU_TIMEOUT_CHECKPOINT_MS,
@@ -1766,12 +1766,12 @@ export function createServerManagerRuntime({
   const runtimeHookBus = hookBus ?? createHookBus({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
   const infrastructureRegistry = createInfrastructureRegistry({ storageRoot })
-  const managerExecutor = injectedManagerExecutor ?? createManagerExecutor({
+  const agentExecutor = injectedAgentExecutor ?? createAgentExecutor({
     storageRoot,
     workspaceRoot,
     fetchFn,
     executionProvider: bailianProvider,
-    managerProfile
+    agentProfile
   })
   const feishuInboundQueue = {
     pending: [],
@@ -1997,7 +1997,7 @@ export function createServerManagerRuntime({
   function scheduleFeishuBackgroundPrecomputeSoon(
     delayMs = DEFAULT_BACKGROUND_PRECOMPUTE_TRIGGER_DELAY_MS
   ) {
-    if (!bailianProvider || !managerProfile.background_precompute?.enabled) {
+    if (!bailianProvider || !agentProfile.background_precompute?.enabled) {
       return false
     }
 
@@ -2053,15 +2053,15 @@ export function createServerManagerRuntime({
     plan = null,
     compaction = null
   }) {
-    if (!managerProfile.external_review?.enabled || !bailianProvider) {
+    if (!agentProfile.external_review?.enabled || !bailianProvider) {
       return null
     }
 
     try {
       const providerResult = await bailianProvider.invokeByIntent({
         intent: 'evaluate',
-        systemPrompt: buildManagerQualityReviewSystemPrompt(),
-        prompt: buildManagerQualityReviewPrompt({
+        systemPrompt: buildAgentQualityReviewSystemPrompt(),
+        prompt: buildAgentQualityReviewPrompt({
           mode,
           operatorRequest,
           sessionSummary,
@@ -2070,13 +2070,13 @@ export function createServerManagerRuntime({
           compaction
         })
       })
-      const review = parseManagerQualityReviewResponse({
+      const review = parseAgentQualityReviewResponse({
         text: providerResult.response.content ?? ''
       })
 
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'external_quality_review_completed',
-        actor: 'manager:reviewer',
+        actor: 'agent:reviewer',
         payload: {
           mode,
           verdict: review.verdict,
@@ -2088,9 +2088,9 @@ export function createServerManagerRuntime({
         at: nowIso()
       })
       await emitHook({
-        name: 'manager.quality_review.completed',
+        name: 'agent.quality_review.completed',
         sessionId,
-        actor: 'manager:reviewer',
+        actor: 'agent:reviewer',
         payload: {
           mode,
           verdict: review.verdict,
@@ -2121,7 +2121,7 @@ export function createServerManagerRuntime({
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'external_quality_review_failed',
-        actor: 'manager:reviewer',
+        actor: 'agent:reviewer',
         payload: {
           mode,
           message: error.message
@@ -2129,9 +2129,9 @@ export function createServerManagerRuntime({
         at: nowIso()
       })
       await emitHook({
-        name: 'manager.quality_review.failed',
+        name: 'agent.quality_review.failed',
         sessionId,
-        actor: 'manager:reviewer',
+        actor: 'agent:reviewer',
         payload: {
           mode,
           message: error.message
@@ -2193,7 +2193,7 @@ export function createServerManagerRuntime({
     }
 
     return {
-      manager_profile: managerProfile,
+      agent_profile: agentProfile,
       seeded_project_count: seededProjects.length,
       seeded_infra_project_count: seededInfrastructure.projects.length,
       seeded_service_count: seededInfrastructure.services.length,
@@ -2205,7 +2205,7 @@ export function createServerManagerRuntime({
     name,
     sessionId,
     channel = null,
-    actor = 'manager:runtime',
+    actor = 'agent:runtime',
     payload = {}
   }) {
     return runtimeHookBus.emit({
@@ -2247,7 +2247,7 @@ export function createServerManagerRuntime({
 
   async function requestCoworkerHelp({
     sessionId,
-    source = 'newagent-manager',
+    source = 'newagent-agent',
     target = DEFAULT_CODEX_COWORKER_TARGET,
     title = null,
     question,
@@ -2265,7 +2265,7 @@ export function createServerManagerRuntime({
       sessionId,
       source,
       target,
-      authority: managerProfile.channels?.coworker?.authority ?? 'advisory_only',
+      authority: agentProfile.channels?.coworker?.authority ?? 'advisory_only',
       title: cleanText(title) || `Need Codex help for ${snapshot.task.title}`,
       question,
       context,
@@ -2281,7 +2281,7 @@ export function createServerManagerRuntime({
 
     await sessionStore.appendTimelineEvent(sessionId, {
       kind: 'coworker_request_created',
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         request_id: request.id,
         source: request.source,
@@ -2297,7 +2297,7 @@ export function createServerManagerRuntime({
       name: 'coworker.request.created',
       sessionId,
       channel: request.channel,
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         request_id: request.id,
         source: request.source,
@@ -2410,7 +2410,7 @@ export function createServerManagerRuntime({
           name: 'channel.session.recovered',
           sessionId: existingState.session_id,
           channel: 'feishu',
-          actor: 'manager:runtime',
+          actor: 'agent:runtime',
           payload: {
             channel_key: FEISHU_UNIFIED_CHANNEL_KEY,
             message: error.message
@@ -2421,7 +2421,7 @@ export function createServerManagerRuntime({
 
     const created = await sessionStore.createSession({
       title,
-      projectKey: 'remote-server-manager',
+      projectKey: 'remote-agent',
       userRequest,
       summary: 'Received feishu operator request',
       userMessageMeta
@@ -2481,7 +2481,7 @@ export function createServerManagerRuntime({
       })
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'conversation_compaction_deferred',
-        actor: 'manager:memory',
+        actor: 'agent:memory',
         payload: {
           reason: 'compaction_already_running'
         },
@@ -2515,7 +2515,7 @@ export function createServerManagerRuntime({
 
         await sessionStore.appendTimelineEvent(sessionId, {
           kind: 'conversation_compaction_skipped',
-          actor: 'manager:memory',
+          actor: 'agent:memory',
           payload: {
             reason
           },
@@ -2568,14 +2568,14 @@ export function createServerManagerRuntime({
 
       const providerResult = await bailianProvider.invokeByIntent({
         intent: 'summarize',
-        systemPrompt: buildManagerCompactionSystemPrompt(),
-        prompt: buildManagerCompactionPrompt({
+        systemPrompt: buildAgentCompactionSystemPrompt(),
+        prompt: buildAgentCompactionPrompt({
           sessionSummary: snapshot.session.summary ?? null,
           storedMemory: latestStoredMemory,
           transcriptLines
         })
       })
-      const compaction = parseManagerCompactionResponse({
+      const compaction = parseAgentCompactionResponse({
         text: providerResult.response.content ?? ''
       })
       const review = await reviewWithExternalModel({
@@ -2590,14 +2590,14 @@ export function createServerManagerRuntime({
         compaction
       })
       const shouldKeepCompaction =
-        !review || review.verdict !== 'block' || !managerProfile.external_review?.enforcing
+        !review || review.verdict !== 'block' || !agentProfile.external_review?.enforcing
 
       if (!shouldKeepCompaction) {
         const currentAt = nowIso()
 
         await sessionStore.appendTimelineEvent(sessionId, {
           kind: 'conversation_compaction_blocked',
-          actor: 'manager:reviewer',
+          actor: 'agent:reviewer',
           payload: {
             summary: review.summary,
             issues: review.issues
@@ -2630,7 +2630,7 @@ export function createServerManagerRuntime({
 
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'conversation_compacted',
-        actor: 'manager:memory',
+        actor: 'agent:memory',
         payload: {
           memory_id: memoryEntry.id,
           model: providerResult.route.model,
@@ -2640,10 +2640,10 @@ export function createServerManagerRuntime({
         at: currentAt
       })
       await emitHook({
-        name: 'manager.context.compacted',
+        name: 'agent.context.compacted',
         sessionId,
         channel: 'feishu',
-        actor: 'manager:memory',
+        actor: 'agent:memory',
         payload: {
           memory_id: memoryEntry.id,
           model: providerResult.route.model,
@@ -2697,17 +2697,17 @@ export function createServerManagerRuntime({
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'conversation_compaction_failed',
-        actor: 'manager:memory',
+        actor: 'agent:memory',
         payload: {
           message: error.message
         },
         at: nowIso()
       })
       await emitHook({
-        name: 'manager.context.compaction_failed',
+        name: 'agent.context.compaction_failed',
         sessionId,
         channel: 'feishu',
-        actor: 'manager:memory',
+        actor: 'agent:memory',
         payload: {
           message: error.message
         }
@@ -2755,7 +2755,7 @@ export function createServerManagerRuntime({
   }
 
   async function runFeishuBackgroundPrecomputeOnce() {
-    if (!bailianProvider || !managerProfile.background_precompute?.enabled) {
+    if (!bailianProvider || !agentProfile.background_precompute?.enabled) {
       return {
         status: 'disabled'
       }
@@ -2861,7 +2861,7 @@ export function createServerManagerRuntime({
       })
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'background_precompute_completed',
-        actor: 'manager:background',
+        actor: 'agent:background',
         payload: {
           model: providerResult.route.model,
           provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
@@ -2871,10 +2871,10 @@ export function createServerManagerRuntime({
         at: currentAt
       })
       await emitHook({
-        name: 'manager.background_precompute.completed',
+        name: 'agent.background_precompute.completed',
         sessionId,
         channel: 'feishu',
-        actor: 'manager:background',
+        actor: 'agent:background',
         payload: {
           model: providerResult.route.model,
           provider: providerResult.route.provider ?? providerResult.route.runtime ?? null,
@@ -2890,7 +2890,7 @@ export function createServerManagerRuntime({
     } catch (error) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'background_precompute_failed',
-        actor: 'manager:background',
+        actor: 'agent:background',
         payload: {
           message: error.message
         },
@@ -2919,7 +2919,7 @@ export function createServerManagerRuntime({
       return {
         text: buildFeishuSelfReflectionReply({
           request,
-          managerProfile,
+          agentProfile,
           preparedContext
         }),
         source: 'self_reflection',
@@ -3013,18 +3013,18 @@ export function createServerManagerRuntime({
     })
 
     await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'manager_follow_up_answered',
-      actor: 'manager:runtime',
+      kind: 'agent_follow_up_answered',
+      actor: 'agent:runtime',
       payload: {
         relation,
         reply_text: replyText
       }
     })
     await emitHook({
-      name: 'manager.follow_up.answered',
+      name: 'agent.follow_up.answered',
       sessionId,
       channel: 'feishu',
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         relation
       }
@@ -3120,9 +3120,9 @@ export function createServerManagerRuntime({
     const serviceInventory = await infrastructureRegistry.listServices()
     const routeInventory = await infrastructureRegistry.listRoutes()
     await emitHook({
-      name: 'manager.planning.started',
+      name: 'agent.planning.started',
       sessionId,
-      actor: 'manager:planner',
+      actor: 'agent:planner',
       payload: {
         available_project_count: projects.length,
         operator_rule_count: operatorRules.length,
@@ -3135,10 +3135,10 @@ export function createServerManagerRuntime({
     })
     const providerResult = await bailianProvider.invokeByIntent({
       intent: 'plan',
-      systemPrompt: buildManagerPlanningSystemPrompt({
-        managerProfile
+      systemPrompt: buildAgentPlanningSystemPrompt({
+        agentProfile
       }),
-      prompt: buildManagerPlanningPrompt({
+      prompt: buildAgentPlanningPrompt({
         message,
         projects,
         operatorRules,
@@ -3157,7 +3157,7 @@ export function createServerManagerRuntime({
         : null,
       'after_planning_provider'
     )
-    const plan = parseManagerPlanningResponse({
+    const plan = parseAgentPlanningResponse({
       text: providerResult.response.content ?? '',
       availableProjects: projects
     })
@@ -3185,8 +3185,8 @@ export function createServerManagerRuntime({
     })
     await sessionStore.updateSessionSummary(sessionId, plan.summary)
     await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'manager_plan_generated',
-      actor: 'manager:planner',
+      kind: 'agent_plan_generated',
+      actor: 'agent:planner',
       payload: {
         project_keys: plan.project_keys,
         step_count: plan.steps.length,
@@ -3197,15 +3197,15 @@ export function createServerManagerRuntime({
     })
     await sessionStore.appendTimelineEvent(sessionId, {
       kind: 'assistant_message_added',
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         content: plan.operator_reply
       }
     })
     await emitHook({
-      name: 'manager.planning.completed',
+      name: 'agent.planning.completed',
       sessionId,
-      actor: 'manager:planner',
+      actor: 'agent:planner',
       payload: {
         project_keys: plan.project_keys,
         step_count: plan.steps.length,
@@ -3250,7 +3250,7 @@ export function createServerManagerRuntime({
       return {
         kind: 'reaction',
         ok: true,
-        source: 'server_manager_runtime',
+        source: 'server_agent_runtime',
         message_id: messageId,
         emoji_type: immediateReaction,
         reaction_id: response?.data?.reaction_id ?? null
@@ -3265,7 +3265,7 @@ export function createServerManagerRuntime({
         return {
           kind: 'text',
           ok: true,
-          source: 'server_manager_runtime',
+          source: 'server_agent_runtime',
           message_id: messageId,
           text: immediateAck,
           reaction_error: error.message
@@ -3274,7 +3274,7 @@ export function createServerManagerRuntime({
         return {
           kind: 'failed',
           ok: false,
-          source: 'server_manager_runtime',
+          source: 'server_agent_runtime',
           stage: 'immediate_ack',
           message_id: messageId,
           reaction_error: error.message,
@@ -3288,7 +3288,7 @@ export function createServerManagerRuntime({
     sessionId = null,
     messageId,
     stage,
-    source = 'server_manager_runtime'
+    source = 'server_agent_runtime'
   }) {
     const emojiType = getFeishuStatusReaction(stage)
     const existing = messageId
@@ -3342,7 +3342,7 @@ export function createServerManagerRuntime({
       if (sessionId) {
         await sessionStore.appendTimelineEvent(sessionId, {
           kind: 'assistant_reaction_added',
-          actor: 'assistant:manager',
+          actor: 'assistant:agent',
           payload: {
             message_id: messageId,
             emoji_type: emojiType,
@@ -3364,7 +3364,7 @@ export function createServerManagerRuntime({
       if (sessionId) {
         await sessionStore.appendTimelineEvent(sessionId, {
           kind: 'channel_reply_failed',
-          actor: 'assistant:manager',
+          actor: 'assistant:agent',
           payload: {
             stage: `reaction_${stage}`,
             message_id: messageId,
@@ -3388,7 +3388,7 @@ export function createServerManagerRuntime({
     sessionId = null,
     messages = [],
     stage,
-    source = 'server_manager_runtime'
+    source = 'server_agent_runtime'
   }) {
     const messageIds = uniqueStringValues(messages.map((item) => item?.message_id))
 
@@ -3418,7 +3418,7 @@ export function createServerManagerRuntime({
 
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'assistant_reaction_added',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           message_id: immediateAck.message_id ?? null,
           emoji_type: immediateAck.emoji_type ?? null,
@@ -3430,7 +3430,7 @@ export function createServerManagerRuntime({
         name: 'channel.ack.sent',
         sessionId,
         channel: 'feishu',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           kind: 'reaction',
           message_id: immediateAck.message_id ?? null,
@@ -3445,7 +3445,7 @@ export function createServerManagerRuntime({
     if (immediateAck.kind === 'text' && immediateAck.ok) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'assistant_message_added',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           content: immediateAck.text ?? null,
           stage: 'immediate_ack',
@@ -3456,7 +3456,7 @@ export function createServerManagerRuntime({
         name: 'channel.ack.sent',
         sessionId,
         channel: 'feishu',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           kind: 'text',
           message_id: immediateAck.message_id ?? null,
@@ -3469,7 +3469,7 @@ export function createServerManagerRuntime({
 
     await sessionStore.appendTimelineEvent(sessionId, {
       kind: 'channel_reply_failed',
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         stage: immediateAck.stage ?? 'immediate_ack',
         source: immediateAck.source ?? null,
@@ -3481,7 +3481,7 @@ export function createServerManagerRuntime({
       name: 'channel.ack.failed',
       sessionId,
       channel: 'feishu',
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         stage: immediateAck.stage ?? 'immediate_ack',
         source: immediateAck.source ?? null,
@@ -3720,7 +3720,7 @@ export function createServerManagerRuntime({
 
     await sessionStore.appendTimelineEvent(sessionId, {
       kind: eventKind,
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         content,
         stage,
@@ -3735,7 +3735,7 @@ export function createServerManagerRuntime({
       name: 'channel.reply.sent',
       sessionId,
       channel: 'feishu',
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         stage,
         format,
@@ -3782,7 +3782,7 @@ export function createServerManagerRuntime({
     if (sessionId) {
       await sessionStore.appendTimelineEvent(sessionId, {
         kind: 'channel_reply_failed',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           stage,
           format,
@@ -3795,7 +3795,7 @@ export function createServerManagerRuntime({
         name: 'channel.reply.failed',
         sessionId,
         channel: 'feishu',
-        actor: 'assistant:manager',
+        actor: 'assistant:agent',
         payload: {
           stage,
           format,
@@ -3828,16 +3828,16 @@ export function createServerManagerRuntime({
       '已响应操作员在线探测，等待下一条明确指令。'
     )
     await sessionStore.appendTimelineEvent(sessionId, {
-      kind: 'manager_ping_detected',
-      actor: 'manager:runtime',
+      kind: 'agent_ping_detected',
+      actor: 'agent:runtime',
       payload: {
         reply_text: replyText
       }
     })
     await emitHook({
-      name: 'manager.ping.detected',
+      name: 'agent.ping.detected',
       sessionId,
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         reply_text: replyText
       }
@@ -3895,7 +3895,7 @@ export function createServerManagerRuntime({
         .catch(async (error) => {
           await sessionStore.appendTimelineEvent(sessionId, {
             kind: 'channel_reply_failed',
-            actor: 'assistant:manager',
+            actor: 'assistant:agent',
             payload: {
               stage,
               reply_error: error.message
@@ -4122,8 +4122,8 @@ export function createServerManagerRuntime({
       })
 
       await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'manager_timeout_extension_requested',
-        actor: 'manager:runtime',
+        kind: 'agent_timeout_extension_requested',
+        actor: 'agent:runtime',
         payload: {
           timeout_ms: longRunningCheckpointMs,
           extension_timeout_ms: longRunningExtensionApprovalMs
@@ -4207,8 +4207,8 @@ export function createServerManagerRuntime({
         const decision = await requestMoreTime()
 
         await sessionStore.appendTimelineEvent(sessionId, {
-          kind: 'manager_timeout_extension_resolved',
-          actor: 'manager:runtime',
+          kind: 'agent_timeout_extension_resolved',
+          actor: 'agent:runtime',
           payload: {
             decision: decision.decision
           }
@@ -4337,7 +4337,7 @@ export function createServerManagerRuntime({
 
     await sessionStore.appendTimelineEvent(sessionId, {
       kind: 'feedback_memory_learned',
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         count: entries.length,
         written_count: writtenCount,
@@ -4347,9 +4347,9 @@ export function createServerManagerRuntime({
       }
     })
     await emitHook({
-      name: 'manager.feedback.learned',
+      name: 'agent.feedback.learned',
       sessionId,
-      actor: 'manager:runtime',
+      actor: 'agent:runtime',
       payload: {
         count: entries.length,
         written_count: writtenCount,
@@ -4729,7 +4729,7 @@ export function createServerManagerRuntime({
             kind: 'created',
             snapshot: await sessionStore.createSession({
               title: buildOperatorTitle(message),
-              projectKey: 'remote-server-manager',
+              projectKey: 'remote-agent',
               userRequest: buildOperatorRequest(message),
               summary: `Received ${channel} operator request`
             }),
@@ -4821,8 +4821,8 @@ export function createServerManagerRuntime({
       })
 
       ackText = activeTurn.kind === 'continued'
-        ? `已收到，继续沿用总管会话 ${sessionId}。`
-        : `已收到，总管会话 ${sessionId} 已创建。`
+        ? `已收到，继续沿用generic agent会话 ${sessionId}。`
+        : `已收到，generic agent会话 ${sessionId} 已创建。`
 
       try {
         updateFeishuRunProgressState(feishuRunState, {
@@ -4919,8 +4919,8 @@ export function createServerManagerRuntime({
           }
 
           ackText = activeTurn.kind === 'continued'
-            ? `已收到，继续沿用总管会话 ${sessionId}。`
-            : `已收到，总管会话 ${sessionId} 已创建。`
+            ? `已收到，继续沿用generic agent会话 ${sessionId}。`
+            : `已收到，generic agent会话 ${sessionId} 已创建。`
 
           if (feedbackAck) {
             ackText = `${ackText}\n${feedbackAck}`
@@ -4948,7 +4948,7 @@ export function createServerManagerRuntime({
             updateFeishuRunProgressState(feishuRunState, {
               phase: 'executing'
             })
-            execution = await managerExecutor.runManagerLoop({
+            execution = await agentExecutor.runAgentLoop({
               sessionId,
               currentInput: buildOperatorRequest(message),
               maxSteps: 4,
@@ -4992,7 +4992,7 @@ export function createServerManagerRuntime({
 
             if (execution?.status === 'stopped') {
               throw new FeishuRunStoppedError(
-                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
+                feishuRunState?.stop_stage ?? 'agent_loop_stopped'
               )
             }
 
@@ -5003,7 +5003,7 @@ export function createServerManagerRuntime({
 
               if (channel === 'feishu' && pendingApproval?.tool_name === 'run_shell_command') {
                 const autoExecuteReport = buildFeishuAutoExecuteReportText(pendingApproval)
-                const continued = await managerExecutor.continueApprovedManagerStep({
+                const continued = await agentExecutor.continueApprovedAgentStep({
                   sessionId,
                   approvalId: pendingApproval.id,
                   currentInput: buildOperatorRequest(message),
@@ -5016,7 +5016,7 @@ export function createServerManagerRuntime({
                 ackText = `${ackText}\n${autoExecuteReport}`
 
                 if (continued.status === 'planned') {
-                  const tail = await managerExecutor.runManagerLoop({
+                  const tail = await agentExecutor.runAgentLoop({
                     sessionId,
                     currentInput: buildOperatorRequest(message),
                     maxSteps: 4,
@@ -5048,9 +5048,9 @@ export function createServerManagerRuntime({
                 }
 
                 await emitHook({
-                  name: 'manager.approval.auto_execute_reported',
+                  name: 'agent.approval.auto_execute_reported',
                   sessionId,
-                  actor: 'manager:executor',
+                  actor: 'agent:executor',
                   payload: {
                     tool_name: pendingApproval.tool_name
                   }
@@ -5060,32 +5060,32 @@ export function createServerManagerRuntime({
 
             if (execution?.status === 'stopped') {
               throw new FeishuRunStoppedError(
-                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
+                feishuRunState?.stop_stage ?? 'agent_loop_stopped'
               )
             }
 
             if (execution.runs.length > 0) {
-              const completedLabels = summarizeManagerRuns(execution.runs)
+              const completedLabels = summarizeAgentRuns(execution.runs)
               await sessionStore.appendTimelineEvent(sessionId, {
-                kind: 'manager_loop_completed',
-                actor: 'manager:executor',
+                kind: 'agent_loop_completed',
+                actor: 'agent:executor',
                 payload: {
                   step_count: completedLabels.length,
                   labels: completedLabels
                 }
               })
               await sessionStore.appendTimelineEvent(sessionId, {
-                kind: 'manager_safe_loop_completed',
-                actor: 'manager:executor',
+                kind: 'agent_safe_loop_completed',
+                actor: 'agent:executor',
                 payload: {
                   step_count: completedLabels.length,
                   labels: completedLabels
                 }
               })
               await emitHook({
-                name: 'manager.loop.completed',
+                name: 'agent.loop.completed',
                 sessionId,
-                actor: 'manager:executor',
+                actor: 'agent:executor',
                 payload: {
                   step_count: completedLabels.length,
                   labels: completedLabels,
@@ -5111,9 +5111,9 @@ export function createServerManagerRuntime({
                 ? `${ackText}\n下一步涉及高风险操作，当前等待审批：${pendingApproval.tool_name}`
                 : `${ackText}\n下一步涉及高风险操作，当前等待审批。`
               await emitHook({
-                name: 'manager.approval.waiting',
+                name: 'agent.approval.waiting',
                 sessionId,
-                actor: 'manager:executor',
+                actor: 'agent:executor',
                 payload: {
                   tool_name: pendingApproval?.tool_name ?? null
                 }
@@ -5138,8 +5138,8 @@ export function createServerManagerRuntime({
           ackText = '已停止当前轮。'
           await abortFeishuSessionAtSafePoint(sessionId)
           await sessionStore.appendTimelineEvent(sessionId, {
-            kind: 'manager_run_stopped',
-            actor: 'manager:runtime',
+            kind: 'agent_run_stopped',
+            actor: 'agent:runtime',
             payload: {
               stage: error.stage
             }
@@ -5147,8 +5147,8 @@ export function createServerManagerRuntime({
         } else {
           finalReplyError = error.message
           await sessionStore.appendTimelineEvent(sessionId, {
-            kind: 'manager_plan_failed',
-            actor: 'manager:planner',
+            kind: 'agent_plan_failed',
+            actor: 'agent:planner',
             payload: {
               message: error.message
             }
@@ -5158,16 +5158,16 @@ export function createServerManagerRuntime({
             `规划器暂时失败：${error.message}`
           )
           await emitHook({
-            name: 'manager.planning.failed',
+            name: 'agent.planning.failed',
             sessionId,
-            actor: 'manager:planner',
+            actor: 'agent:planner',
             payload: {
               message: error.message
             }
           })
           ackText = activeTurn.kind === 'continued'
-            ? `已收到，继续沿用总管会话 ${sessionId}，但本轮规划失败：${error.message}`
-            : `已收到，总管会话 ${sessionId} 已创建，但首轮规划失败：${error.message}`
+            ? `已收到，继续沿用generic agent会话 ${sessionId}，但本轮规划失败：${error.message}`
+            : `已收到，generic agent会话 ${sessionId} 已创建，但首轮规划失败：${error.message}`
 
           if (feedbackAck) {
             ackText = `${ackText}\n${feedbackAck}`
@@ -5345,7 +5345,7 @@ export function createServerManagerRuntime({
       maintenance_state: {
         started: maintenance.started,
         poll_interval_ms: maintenance.poll_interval_ms,
-        background_precompute_enabled: managerProfile.background_precompute?.enabled === true
+        background_precompute_enabled: agentProfile.background_precompute?.enabled === true
       }
     }
   }

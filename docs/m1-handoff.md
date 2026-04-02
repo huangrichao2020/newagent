@@ -6,7 +6,7 @@ Updated: `2026-04-02`
 
 `newagent` has moved beyond spec-only work.
 
-M1 now has runnable kernel slices plus a first manager loop:
+M1 now has runnable kernel slices plus a first agent loop:
 
 1. `Session Kernel`
 2. `Context Router`
@@ -165,7 +165,7 @@ Main gaps:
 
 - no interactive shell loop
 - no `operate / deploy` execution mapping yet
-- no live remote acceptance for the latest manager loop
+- no live remote acceptance for the latest agent loop
 
 Note:
 
@@ -174,7 +174,7 @@ Note:
 
 ## Recommended Next Steps
 
-1. Extend the manager loop beyond `inspect / review / repair / report` into `operate / deploy`.
+1. Extend the agent loop beyond `inspect / review / repair / report` into `operate / deploy`.
 2. Re-sync the latest code to aliyun and verify real Feishu long-connection traffic.
 3. Only after that, consider an interactive shell loop.
 

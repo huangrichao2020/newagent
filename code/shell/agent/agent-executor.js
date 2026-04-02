@@ -2,7 +2,7 @@ import { createStepExecutor } from '../executor/step-executor.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { buildPromptContract } from '../prompts/prompt-contract.js'
 import { createSessionStore } from '../session/session-store.js'
-import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
+import { createAgentProfile } from './agent-profile.js'
 import { isAbsolute, resolve, sep } from 'node:path'
 
 function cleanString(value) {
@@ -463,7 +463,7 @@ function latestManagerProjectKeys(snapshot) {
   return []
 }
 
-function resolveProjectForStep({ step, projects, managerProjectKeys }) {
+function resolveProjectForStep({ step, projects, agentProjectKeys }) {
   const haystack = `${step.title ?? ''} ${step.notes ?? ''}`.toLowerCase()
   const byExplicitMention = projects.find((project) => {
     return haystack.includes(project.project_key.toLowerCase())
@@ -474,8 +474,8 @@ function resolveProjectForStep({ step, projects, managerProjectKeys }) {
     return byExplicitMention
   }
 
-  if (managerProjectKeys.length === 1) {
-    return projects.find((project) => project.project_key === managerProjectKeys[0]) ?? null
+  if (agentProjectKeys.length === 1) {
+    return projects.find((project) => project.project_key === agentProjectKeys[0]) ?? null
   }
 
   return null
@@ -494,17 +494,17 @@ function buildProjectSummary(project) {
   ].join('\n')
 }
 
-function buildManagerExecutionSystemPrompt() {
+function buildAgentExecutionSystemPrompt() {
   return buildPromptContract({
     sections: [
       {
         title: 'ROLE',
-        lines: ['Convert one remote server manager operate or deploy step into one executable shell command.']
+        lines: ['Convert one remote agent operate or deploy step into one executable shell command.']
       },
       {
         title: 'TASK',
         lines: [
-          'Generate the smallest command that safely advances the requested manager step.',
+          'Generate the smallest command that safely advances the requested agent step.',
           'Stay within the provided project paths and operating context.'
         ]
       },
@@ -537,7 +537,7 @@ function buildManagerExecutionSystemPrompt() {
   })
 }
 
-function buildManagerExecutionPrompt({
+function buildAgentExecutionPrompt({
   step,
   project,
   operatorRequest,
@@ -586,7 +586,7 @@ function buildManagerExecutionPrompt({
   })
 }
 
-function parseManagerExecutionResponse({
+function parseAgentExecutionResponse({
   text,
   defaultCwd
 }) {
@@ -664,11 +664,11 @@ function buildCodexInstruction({
   const responseRules = []
 
   if (mode === 'review') {
-    protocolLines.push('Review the target workspace for this remote server manager task.')
+    protocolLines.push('Review the target workspace for this remote agent task.')
     protocolLines.push('Focus on correctness, regressions, deployment risk, path drift, service health, and missing verification.')
     responseRules.push('Report actionable findings first, ordered by severity.')
   } else {
-    protocolLines.push('Repair the target workspace for this remote server manager task.')
+    protocolLines.push('Repair the target workspace for this remote agent task.')
     protocolLines.push('Apply the minimal safe fix that resolves the requested issue.')
     protocolLines.push('Preserve unrelated files and keep edits scoped.')
     responseRules.push('Leave a concise explanation of what changed and why.')
@@ -679,16 +679,16 @@ function buildCodexInstruction({
       title: 'ROLE',
       lines: [
         mode === 'review'
-          ? 'Act as a review specialist for remote server manager tasks.'
-          : 'Act as a repair specialist for remote server manager tasks.'
+          ? 'Act as a review specialist for remote agent tasks.'
+          : 'Act as a repair specialist for remote agent tasks.'
       ]
     },
     {
       title: 'TASK',
       bullet: false,
       lines: [
-        `Manager step title: ${step.title}`,
-        step.notes ? `Manager step notes: ${step.notes}` : null
+        `Agent step title: ${step.title}`,
+        step.notes ? `Agent step notes: ${step.notes}` : null
       ]
     }
   ]
@@ -1026,14 +1026,14 @@ function summarizeSelectionOutput({ toolName, output }) {
   return `已执行 ${toolName}`
 }
 
-export function selectManagerToolForStep({
+export function selectAgentToolForStep({
   step,
   projects,
-  managerProjectKeys,
+  agentProjectKeys,
   workspaceRoot = process.cwd(),
   operatorRequest = null,
   sessionSummary = null,
-  managerProfile = createRemoteServerManagerProfile()
+  agentProfile = createAgentProfile()
 }) {
   const normalizedKind = normalizeText(step.kind)
   const normalizedTitle = normalizeText(step.title)
@@ -1042,7 +1042,7 @@ export function selectManagerToolForStep({
   const project = resolveProjectForStep({
     step,
     projects,
-    managerProjectKeys
+    agentProjectKeys
   })
   const rawStepText = `${step.title ?? ''} ${step.notes ?? ''}`
   const explicitPort = extractPortFromText(rawStepText)
@@ -1061,7 +1061,7 @@ export function selectManagerToolForStep({
   }
 
   if (normalizedKind === 'review') {
-    if (!managerProfile.codex_integration.allow_review) {
+    if (!agentProfile.codex_integration.allow_review) {
       return {
         supported: false,
         reason: 'Codex review is disabled for this environment'
@@ -1072,7 +1072,7 @@ export function selectManagerToolForStep({
       supported: true,
       action: 'tool',
       project,
-      tool_name: managerProfile.codex_integration.review_tool_name,
+      tool_name: agentProfile.codex_integration.review_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         json: true,
@@ -1088,7 +1088,7 @@ export function selectManagerToolForStep({
   }
 
   if (normalizedKind === 'repair') {
-    if (!managerProfile.codex_integration.allow_repair) {
+    if (!agentProfile.codex_integration.allow_repair) {
       return {
         supported: false,
         reason: 'Codex repair is disabled for this environment'
@@ -1099,7 +1099,7 @@ export function selectManagerToolForStep({
       supported: true,
       action: 'tool',
       project,
-      tool_name: managerProfile.codex_integration.repair_tool_name,
+      tool_name: agentProfile.codex_integration.repair_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         full_auto: true,
@@ -1130,7 +1130,7 @@ export function selectManagerToolForStep({
   if (normalizedKind !== 'inspect') {
     return {
       supported: false,
-      reason: `Unsupported manager step kind: ${step.kind}`
+      reason: `Unsupported agent step kind: ${step.kind}`
     }
   }
 
@@ -1394,15 +1394,15 @@ export function selectManagerToolForStep({
   }
 }
 
-function summarizeCompletedManagerSteps(snapshot) {
+function summarizeCompletedAgentSteps(snapshot) {
   return snapshot.plan_steps
     .filter((step) => step.status === 'completed')
     .map((step) => `- ${step.title}`)
 }
 
-function summarizeRecentManagerExecution(snapshot) {
+function summarizeRecentAgentExecution(snapshot) {
   return snapshot.timeline
-    .filter((event) => event.kind === 'manager_step_executed')
+    .filter((event) => event.kind === 'agent_step_executed')
     .slice(-4)
     .map((event) => event.payload?.summary)
     .filter(Boolean)
@@ -1410,8 +1410,8 @@ function summarizeRecentManagerExecution(snapshot) {
 
 function buildManagerReportText(snapshot) {
   const lines = []
-  const completedSteps = summarizeCompletedManagerSteps(snapshot)
-  const executionHighlights = summarizeRecentManagerExecution(snapshot)
+  const completedSteps = summarizeCompletedAgentSteps(snapshot)
+  const executionHighlights = summarizeRecentAgentExecution(snapshot)
   const nextStep = snapshot.plan_steps.find((step) => step.status === 'ready')
 
   lines.push('阶段汇报：')
@@ -1437,13 +1437,13 @@ function buildManagerReportText(snapshot) {
   return lines.join('\n')
 }
 
-export function createManagerExecutor({
+export function createAgentExecutor({
   storageRoot,
   workspaceRoot,
   codexCommand = 'codex',
   fetchFn = globalThis.fetch,
   executionProvider = null,
-  managerProfile = createRemoteServerManagerProfile()
+  agentProfile = createAgentProfile()
 }) {
   const sessionStore = createSessionStore({ storageRoot })
   const projectRegistry = createProjectRegistry({ storageRoot })
@@ -1477,15 +1477,15 @@ export function createManagerExecutor({
     const defaultCwd = resolveProjectWorkspace(project, workspaceRoot)
     const providerResult = await executionProvider.invokeByIntent({
       intent: 'operate',
-      systemPrompt: buildManagerExecutionSystemPrompt(),
-      prompt: buildManagerExecutionPrompt({
+      systemPrompt: buildAgentExecutionSystemPrompt(),
+      prompt: buildAgentExecutionPrompt({
         step,
         project,
         operatorRequest,
         sessionSummary
       })
     })
-    const executionPlan = parseManagerExecutionResponse({
+    const executionPlan = parseAgentExecutionResponse({
       text: providerResult.response.content ?? '',
       defaultCwd
     })
@@ -1531,15 +1531,15 @@ export function createManagerExecutor({
     await sessionStore.appendTimelineEvent(sessionId, {
       stepId: step.id,
       kind: 'assistant_message_added',
-      actor: 'assistant:manager',
+      actor: 'assistant:agent',
       payload: {
         content: reportText
       }
     })
     await sessionStore.appendTimelineEvent(sessionId, {
       stepId: step.id,
-      kind: 'manager_report_generated',
-      actor: 'manager:executor',
+      kind: 'agent_report_generated',
+      actor: 'agent:executor',
       payload: {
         content: reportText
       }
@@ -1575,21 +1575,21 @@ export function createManagerExecutor({
       return {
         status: 'error',
         error: {
-          message: 'No current manager step is ready to execute'
+          message: 'No current agent step is ready to execute'
         }
       }
     }
 
     const projects = await projectRegistry.listProjects()
-    const managerProjectKeys = latestManagerProjectKeys(snapshot)
-    const initialSelection = selectManagerToolForStep({
+    const agentProjectKeys = latestManagerProjectKeys(snapshot)
+    const initialSelection = selectAgentToolForStep({
       step,
       projects,
-      managerProjectKeys,
+      agentProjectKeys,
       workspaceRoot,
       operatorRequest: currentInput ?? snapshot.task.user_request,
       sessionSummary: snapshot.session.summary,
-      managerProfile
+      agentProfile
     })
     let selection = initialSelection
 
@@ -1629,8 +1629,8 @@ export function createManagerExecutor({
     if (!selection.supported) {
       await sessionStore.appendTimelineEvent(sessionId, {
         stepId: step.id,
-        kind: 'manager_step_deferred',
-        actor: 'manager:executor',
+        kind: 'agent_step_deferred',
+        actor: 'agent:executor',
         payload: {
           reason: selection.reason
         }
@@ -1660,8 +1660,8 @@ export function createManagerExecutor({
 
     await sessionStore.appendTimelineEvent(sessionId, {
       stepId: step.id,
-      kind: 'manager_tool_selected',
-      actor: 'manager:executor',
+      kind: 'agent_tool_selected',
+      actor: 'agent:executor',
       payload: {
         tool_name: selection.tool_name,
         command: selection.tool_input?.command ?? null,
@@ -1685,8 +1685,8 @@ export function createManagerExecutor({
       })
 
       await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'manager_step_executed',
-        actor: 'manager:executor',
+        kind: 'agent_step_executed',
+        actor: 'agent:executor',
         payload: {
           tool_name: selection.tool_name,
           summary

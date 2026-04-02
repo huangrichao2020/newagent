@@ -231,7 +231,7 @@ function buildPreparedContextLines(preparedContext, {
   ].filter(Boolean)
 }
 
-export function buildManagerPlanningSystemPrompt({ managerProfile }) {
+export function buildAgentPlanningSystemPrompt({ agentProfile }) {
   const protocolRules = [
     'project_keys must only contain known project keys from the provided inventory.',
     'steps must be concrete and ordered.',
@@ -257,7 +257,7 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
     sections: [
       {
         title: 'ROLE',
-        lines: [managerProfile.role]
+        lines: [agentProfile.role]
       },
       {
         title: 'TASK',
@@ -296,7 +296,7 @@ export function buildManagerPlanningSystemPrompt({ managerProfile }) {
   })
 }
 
-export function buildManagerPlanningPrompt({
+export function buildAgentPlanningPrompt({
   message,
   projects,
   operatorRules = [],
@@ -534,7 +534,7 @@ export function buildManagerPlanningPrompt({
   })
 }
 
-export function parseManagerPlanningResponse({
+export function parseAgentPlanningResponse({
   text,
   availableProjects
 }) {

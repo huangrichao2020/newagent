@@ -3,12 +3,12 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createServerManagerRuntime } from './server-manager-runtime.js'
+import { createAgentRuntime } from './agent-runtime.js'
 import { createSessionStore } from '../session/session-store.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createMemoryStore } from '../memory/memory-store.js'
 import { createHookBus } from '../hooks/hook-bus.js'
-import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
+import { createAgentProfile } from './agent-profile.js'
 
 async function createHarness({
   nowFn = Date.now,
@@ -42,7 +42,7 @@ async function createHarness({
   const backgroundCalls = []
   const providerCalls = []
   let generatedReplyId = 0
-  const managerProfile = createRemoteServerManagerProfile({
+  const managerProfile = createAgentProfile({
     env: enableExternalReview
       ? {
           NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
@@ -159,7 +159,7 @@ async function createHarness({
     backgroundCalls,
     providerCalls,
     feishuGateway,
-    runtime: createServerManagerRuntime({
+    runtime: createAgentRuntime({
       storageRoot,
       workspaceRoot,
       managerProfile,
@@ -764,10 +764,10 @@ test('handleChannelMessage surfaces approval pause when repair enters the loop',
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-repair-'))
   const storageRoot = join(root, 'storage')
   const replies = []
-  const runtime = createServerManagerRuntime({
+  const runtime = createAgentRuntime({
     storageRoot,
     workspaceRoot: join(root, 'workspace'),
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     }),
     feishuGateway: {
@@ -1555,7 +1555,7 @@ test('handleChannelMessage degrades gracefully when planner fails', async () => 
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-fail-'))
   const storageRoot = join(root, 'storage')
   const replies = []
-  const runtime = createServerManagerRuntime({
+  const runtime = createAgentRuntime({
     storageRoot,
     feishuGateway: {
       async addMessageReaction(payload) {
@@ -1600,7 +1600,7 @@ test('handleChannelMessage sends a progress update when planning crosses the del
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-progress-'))
   const storageRoot = join(root, 'storage')
   const replies = []
-  const runtime = createServerManagerRuntime({
+  const runtime = createAgentRuntime({
     storageRoot,
     progressReplyDelayMs: 0,
     feishuGateway: {
@@ -1676,7 +1676,7 @@ test('handleChannelMessage records a gateway immediate reaction without sending 
   const root = await mkdtemp(join(tmpdir(), 'newagent-server-manager-preacked-'))
   const storageRoot = join(root, 'storage')
   const replies = []
-  const runtime = createServerManagerRuntime({
+  const runtime = createAgentRuntime({
     storageRoot,
     feishuGateway: {
       async addMessageReaction() {

@@ -9,7 +9,7 @@ import { createDebugRuntime } from '../debug/debug-runtime.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createInfrastructureRegistry } from '../registry/infrastructure-registry.js'
 import { createNewsSourceRegistry } from '../registry/news-source-registry.js'
-import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
+import { createAgentProfile } from '../manager/agent-profile.js'
 import {
   createFeishuApiClient,
   describeFeishuChannelConfig
@@ -2857,7 +2857,7 @@ export function createToolRuntime({
   fetchFn = globalThis.fetch,
   pm2Command = 'pm2',
   hookBus = null,
-  managerProfile = createRemoteServerManagerProfile(),
+  managerProfile = createAgentProfile(),
   feishuApiClientFactory = createFeishuApiClient,
   feishuConfigDescriber = describeFeishuChannelConfig,
   feishuUserAuthManager = null

@@ -15,7 +15,7 @@
 ## Hard Constraints
 
 - 主系统不能挂。
-- `newagent-manager` 和 `newagent-scrapling-worker` 不能因为这次开发失联。
+- `newagent-agent` 和 `newagent-scrapling-worker` 不能因为这次开发失联。
 - 先在仓库里完成实现和测试，再低风险重启。
 - 不允许把飞书当成纯文本聊天渠道，最终要把它变成真正的工作台。
 - 高风险动作可以先报备，不必等批准，但必须给出明确影响说明和阻止窗口。
@@ -161,7 +161,7 @@
 - `news_*` 可以稳定拉到一类通用源、一类股票源、一类热榜源
 - `channel_feishu_*` 至少有 1 套文档 CRUD、1 套云盘 CRUD、1 套知识库 CRUD、1 套多维表格 CRUD
 - 针对性测试通过
-- 重启后 manager 仍在线
+- 重启后 agent 仍在线
 - 最终给用户一份简短结果，不要长篇废话
 
 ## Stop Conditions

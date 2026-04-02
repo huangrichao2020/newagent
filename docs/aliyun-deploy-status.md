@@ -16,8 +16,8 @@
 
 - 代码同步到远端
 - `npm install` 完成
-- `manager bootstrap` 通过
-- `manager intake-message` 命令可运行
+- `agent bootstrap` 通过
+- `agent intake-message` 命令可运行
 - 远端最新代码已同步
 - 远端 `npm run test:all` 已复核通过：
   - Node 测试 `119/119`
@@ -29,8 +29,8 @@
   - 请求附带：`extra_body.enable_thinking=true`
 - 飞书长连接前台验证通过
 - `pm2` 常驻进程已上线：
-  - 进程名：`newagent-manager`
-  - 入口：`/root/.config/newagent/start-manager.sh`
+  - 进程名：`newagent-agent`
+  - 入口：`/root/.config/newagent/start-agent.sh`
   - 最新代码已完成重启生效并 `pm2 save`
 - 本地已补齐 Scrapling worker：
   - 路径：`code/workers/scrapling_worker/app.py`
@@ -49,7 +49,7 @@
   - `/v1/extract` 已对 `static / dynamic / stealth` 三种模式完成真实请求验证
   - 验证样例：`https://example.com` + `selector=h1`
 - `operate / deploy` 步骤已接入真实自动执行链：
-  - `manager step-run` 会调用 execution model 生成结构化 shell 命令
+  - `agent step-run` 会调用 execution model 生成结构化 shell 命令
   - 命令统一落到 `run_shell_command`
   - 仍然走现有审批流，审批后才执行
 - 远端 `operate` 链已实际验证通过：
@@ -64,7 +64,7 @@
   - `route resolve --intent repair` 会返回 `runtime=disabled`
 - 远端真实密钥已迁到 repo 外环境变量：
   - 环境文件：`/root/.config/newagent/env.sh`
-  - PM2 入口：`/root/.config/newagent/start-manager.sh`
+  - PM2 入口：`/root/.config/newagent/start-agent.sh`
   - 项目目录 `.env` 不再作为长期基线
 
 ## Verified Commands
@@ -74,7 +74,7 @@
 ```bash
 cd /root/newagent/code
 node ./bin/newagent.js profile show --json
-node ./bin/newagent.js manager bootstrap --storage-root /root/newagent/storage --json
+node ./bin/newagent.js agent bootstrap --storage-root /root/newagent/storage --json
 npm run test:all
 curl -s http://127.0.0.1:7771/healthz
 curl -s http://127.0.0.1:7771/v1/extract \
@@ -86,7 +86,7 @@ curl -s http://127.0.0.1:7771/v1/extract \
 
 ```bash
 cd /root/newagent/code
-node ./bin/newagent.js manager intake-message \
+node ./bin/newagent.js agent intake-message \
   --storage-root /root/newagent/storage \
   --text "盘一下服务器上的股票项目" \
   --json
@@ -100,8 +100,8 @@ node ./bin/newagent.js manager intake-message \
 
 ```bash
 cd /root/newagent/code
-node ./bin/newagent.js manager step-run --storage-root /root/newagent/storage --session-id <session-id> --json
-node ./bin/newagent.js manager loop-run --storage-root /root/newagent/storage --session-id <session-id> --max-steps 4 --json
+node ./bin/newagent.js agent step-run --storage-root /root/newagent/storage --session-id <session-id> --json
+node ./bin/newagent.js agent loop-run --storage-root /root/newagent/storage --session-id <session-id> --max-steps 4 --json
 ```
 
 ## Missing Runtime Inputs
@@ -118,13 +118,13 @@ node ./bin/newagent.js manager loop-run --storage-root /root/newagent/storage --
 
 这些动作已经执行：
 
-- `pm2 start pm2/ecosystem.config.cjs --only newagent-manager`
+- `pm2 start pm2/ecosystem.config.cjs --only newagent-agent`
 - 飞书长连接真实登录
 - 百炼真实规划调用
-- `manager intake-message` 已完成真实规划和首轮巡检
-- `review / report / repair` 已接入自动 manager loop
-- `operate / deploy` 已接入 manager loop，并转成审批保护下的 `run_shell_command`
-- 最新代码已同步到阿里云并完成 `pm2 restart newagent-manager`
+- `agent intake-message` 已完成真实规划和首轮巡检
+- `review / report / repair` 已接入自动 agent loop
+- `operate / deploy` 已接入 agent loop，并转成审批保护下的 `run_shell_command`
+- 最新代码已同步到阿里云并完成 `pm2 restart newagent-agent`
 - `pm2 restart newagent-scrapling-worker`
 - `web_extract_scrapling` 已完成线上 worker 接入与三种模式实测
 - `operate` 步骤已在远端通过临时 demo 项目完成一次真实审批和执行

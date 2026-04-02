@@ -127,7 +127,7 @@ M1 先做这几件事：
 - 通过 `channel_feishu_drive_*` / `channel_feishu_file_upload` 管理云盘目录、移动文件和上传文件
 - 通过 `channel_feishu_wiki_*` 列知识空间、建节点、改标题、移动节点和挂载现有文档
 - 通过 `channel_feishu_bitable_*` 创建多维表格、建表、列记录和增改记录
-- 在 runtime 内自动推进第一版 manager loop
+- 在 runtime 内自动推进第一版 agent loop
 - 能检查项目的 PM2 进程状态
 - 能自动生成阶段汇报
 - 能自动调 `codex review`

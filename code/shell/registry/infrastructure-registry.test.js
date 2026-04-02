@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createInfrastructureRegistry } from './infrastructure-registry.js'
-import { getAliyunInfrastructureRegistry } from '../manager/remote-server-manager-profile.js'
+import { getAliyunInfrastructureRegistry } from '../manager/agent-profile.js'
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-infra-registry-'))

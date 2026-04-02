@@ -30,7 +30,7 @@ function readStringEnv(env, name, fallback = null) {
   return normalized === '' ? fallback : normalized
 }
 
-export function createRemoteServerManagerProfile({
+export function createAgentProfile({
   env = process.env
 } = {}) {
   const disableCodex = readBooleanEnv(env, 'NEWAGENT_DISABLE_CODEX', false)

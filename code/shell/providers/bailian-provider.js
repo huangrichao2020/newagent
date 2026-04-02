@@ -1,4 +1,4 @@
-import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
+import { createAgentProfile } from '../manager/agent-profile.js'
 import { createModelRouter } from './model-router.js'
 
 function normalizeBaseUrl(baseUrl) {
@@ -110,7 +110,7 @@ async function parseJsonResponse(response) {
 
 export function createBailianProvider({
   fetchFn = globalThis.fetch,
-  managerProfile = createRemoteServerManagerProfile(),
+  managerProfile = createAgentProfile(),
   modelRouter = createModelRouter({ managerProfile })
 } = {}) {
   if (typeof fetchFn !== 'function') {

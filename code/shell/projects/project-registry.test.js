@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProjectRegistry } from './project-registry.js'
 import {
-  createRemoteServerManagerProfile,
+  createAgentProfile,
   getAliyunSeedProjects
-} from '../manager/remote-server-manager-profile.js'
+} from '../manager/agent-profile.js'
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-project-registry-'))
@@ -62,7 +62,7 @@ test('seedProjects writes the aliyun server baseline and listProjects can filter
 })
 
 test('remote agent profile pins the intended channels and model routing', async () => {
-  const profile = createRemoteServerManagerProfile({
+  const profile = createAgentProfile({
     env: {}
   })
 
@@ -79,7 +79,7 @@ test('remote agent profile pins the intended channels and model routing', async 
 })
 
 test('remote agent profile can explicitly enable Codex integration through env flags', async () => {
-  const profile = createRemoteServerManagerProfile({
+  const profile = createAgentProfile({
     env: {
       NEWAGENT_ENABLE_CODEX_REVIEW: 'true',
       NEWAGENT_ENABLE_CODEX_REPAIR: 'true'
@@ -91,7 +91,7 @@ test('remote agent profile can explicitly enable Codex integration through env f
 })
 
 test('remote manager profile can enable OpenRouter external review without storing secrets in repo config', async () => {
-  const profile = createRemoteServerManagerProfile({
+  const profile = createAgentProfile({
     env: {
       NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
       NEWAGENT_EXTERNAL_REVIEW_MODEL: 'stepfun/step-3.5-flash:free',
@@ -113,7 +113,7 @@ test('remote manager profile can enable OpenRouter external review without stori
 })
 
 test('remote manager profile keeps background precompute opt-in even when external review is enabled', async () => {
-  const profile = createRemoteServerManagerProfile({
+  const profile = createAgentProfile({
     env: {
       NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
       NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE: 'true'

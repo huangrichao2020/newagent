@@ -1,4 +1,4 @@
-import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
+import { createAgentProfile } from '../manager/agent-profile.js'
 
 const INTENT_TO_ROUTE = new Map([
   ['plan', 'planner'],
@@ -24,7 +24,7 @@ const INTENT_TO_ROUTE = new Map([
   ['fix', 'repair']
 ])
 
-export function createModelRouter({ managerProfile = createRemoteServerManagerProfile() } = {}) {
+export function createModelRouter({ managerProfile = createAgentProfile() } = {}) {
   function resolveRoute(intent) {
     const normalizedIntent = String(intent ?? '').trim().toLowerCase()
 

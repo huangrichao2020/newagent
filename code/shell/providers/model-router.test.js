@@ -1,11 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createModelRouter } from './model-router.js'
-import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
+import { createAgentProfile } from '../manager/agent-profile.js'
 
 test('resolveRoute sends planning intents to Bailian codingplan', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     })
   })
@@ -18,7 +18,7 @@ test('resolveRoute sends planning intents to Bailian codingplan', () => {
 
 test('resolveRoute sends execution intents to Bailian qwen3.5-plus', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     })
   })
@@ -31,7 +31,7 @@ test('resolveRoute sends execution intents to Bailian qwen3.5-plus', () => {
 
 test('resolveRoute keeps dedicated review and repair intents disabled by default', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     })
   })
@@ -46,7 +46,7 @@ test('resolveRoute keeps dedicated review and repair intents disabled by default
 
 test('resolveRoute sends evaluation intents to OpenRouter when external review is enabled', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {
         NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
         NEWAGENT_EXTERNAL_REVIEW_MODEL: 'stepfun/step-3.5-flash:free'
@@ -62,7 +62,7 @@ test('resolveRoute sends evaluation intents to OpenRouter when external review i
 
 test('resolveRoute sends background intents to OpenRouter when background precompute is enabled', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {
         NEWAGENT_ENABLE_EXTERNAL_REVIEW: 'true',
         NEWAGENT_ENABLE_BACKGROUND_PRECOMPUTE: 'true',
@@ -79,7 +79,7 @@ test('resolveRoute sends background intents to OpenRouter when background precom
 
 test('resolveRoute can enable dedicated review and repair intents when requested explicitly', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {
         NEWAGENT_ENABLE_CODEX_REVIEW: 'true',
         NEWAGENT_ENABLE_CODEX_REPAIR: 'true'
@@ -97,7 +97,7 @@ test('resolveRoute can enable dedicated review and repair intents when requested
 
 test('resolveRoute disables evaluation when external review is turned off', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     })
   })
@@ -109,7 +109,7 @@ test('resolveRoute disables evaluation when external review is turned off', () =
 
 test('resolveRoute disables background precompute when it is turned off', () => {
   const router = createModelRouter({
-    managerProfile: createRemoteServerManagerProfile({
+    managerProfile: createAgentProfile({
       env: {}
     })
   })

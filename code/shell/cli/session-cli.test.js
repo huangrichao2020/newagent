@@ -8,7 +8,7 @@ import { createSessionStore } from '../session/session-store.js'
 import { createCoworkerStore } from '../coworkers/coworker-store.js'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createHookBus } from '../hooks/hook-bus.js'
-import { createRemoteServerManagerProfile } from '../manager/remote-server-manager-profile.js'
+import { createAgentProfile } from '../manager/agent-profile.js'
 
 async function createStorageRoot() {
   const root = await mkdtemp(join(tmpdir(), 'newagent-cli-'))
@@ -123,7 +123,7 @@ test('project register upserts one explicit project record through the CLI', asy
 })
 
 test('route resolve exposes the manager model routing and codex tool routing', async () => {
-  const managerProfile = createRemoteServerManagerProfile({
+  const managerProfile = createAgentProfile({
     env: {}
   })
   const planning = await executeCli({

@@ -13,7 +13,7 @@ Outputs:
 
 ## Phase 1
 
-Goal: freeze the remote server manager definition
+Goal: freeze the remote agent definition
 
 Outputs:
 
@@ -21,13 +21,13 @@ Outputs:
 - architecture baseline
 - M1 scope definition
 - project operating rules
-- remote-server manager target fixed
+- remote-server agent target fixed
 - Feishu long-connection constraint fixed
 - Bailian model routing fixed
 
 Exit criteria:
 
-- we can explain what the manager is
+- we can explain what the agent is
 - we can explain what M1 includes and excludes
 
 ## Phase 2
@@ -41,7 +41,7 @@ Outputs:
 - timeline persistence
 - minimal context assembly
 - server project registry
-- remote manager profile
+- remote agent profile
 
 Exit criteria:
 
@@ -78,7 +78,7 @@ Outputs:
 - visible execution states
 - command surface for inspect, resume, abort, approve
 - project register and inspect commands
-- manager profile inspection
+- agent profile inspection
 
 Exit criteria:
 
@@ -121,13 +121,13 @@ Outputs:
 - deploy to aliyun
 - connect Feishu operator channel
 - load server project baseline
-- let the manager take over real work
+- let the agent take over real work
 
 Exit criteria:
 
-- the manager can receive work from Feishu
-- the manager can inspect known server projects
-- the manager can call Codex for review and repair
+- the agent can receive work from Feishu
+- the agent can inspect known server projects
+- the agent can call Codex for review and repair
 
 Current gap:
 

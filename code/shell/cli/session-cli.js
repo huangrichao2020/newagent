@@ -9,9 +9,9 @@ import { createStepExecutor } from '../executor/step-executor.js'
 import { createDebugRuntime } from '../debug/debug-runtime.js'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import {
-  createRemoteServerManagerProfile,
+  createAgentProfile,
   getAliyunSeedProjects
-} from '../manager/remote-server-manager-profile.js'
+} from '../agent/agent-profile.js'
 import { createModelRouter } from '../providers/model-router.js'
 import { createBailianProvider } from '../providers/bailian-provider.js'
 import {
@@ -19,8 +19,8 @@ import {
   describeFeishuChannelConfig
 } from '../channels/feishu/feishu-gateway.js'
 import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
-import { createServerManagerRuntime } from '../manager/server-manager-runtime.js'
-import { createManagerExecutor } from '../manager/manager-executor.js'
+import { createAgentRuntime } from '../agent/agent-runtime.js'
+import { createAgentExecutor } from '../agent/agent-executor.js'
 
 const DEFAULT_STORAGE_ROOT = resolve(
   fileURLToPath(new URL('../../../storage', import.meta.url))
@@ -205,12 +205,12 @@ export async function executeCli({
     const hookBus = createHookBus({ storageRoot })
     const debugRuntime = createDebugRuntime({ storageRoot })
     const projectRegistry = createProjectRegistry({ storageRoot })
-    const managerProfile =
-      dependencies.managerProfile ?? createRemoteServerManagerProfile()
+    const agentProfile =
+      dependencies.agentProfile ?? createAgentProfile()
     const modelRouter =
-      dependencies.modelRouter ?? createModelRouter({ managerProfile })
+      dependencies.modelRouter ?? createModelRouter({ agentProfile })
     const bailianProvider =
-      dependencies.bailianProvider ?? createBailianProvider({ managerProfile, modelRouter })
+      dependencies.bailianProvider ?? createBailianProvider({ agentProfile, modelRouter })
     const feishuGatewayFactory =
       dependencies.feishuGatewayFactory ?? (() => createFeishuGateway())
     const sharedFetchFn = dependencies.fetchFn ?? globalThis.fetch
@@ -230,7 +230,7 @@ export async function executeCli({
       return {
         exitCode: 0,
         stdout: formatOutput(command, {
-          profile: managerProfile
+          profile: agentProfile
         }, asJson),
         stderr
       }
@@ -422,12 +422,12 @@ export async function executeCli({
       }
     }
 
-    if (command === 'manager bootstrap') {
-      const runtime = createServerManagerRuntime({
+    if (command === 'agent bootstrap') {
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
-        managerProfile
+        agentProfile
       })
       const result = await runtime.bootstrapServerBaseline()
 
@@ -438,14 +438,14 @@ export async function executeCli({
       }
     }
 
-    if (command === 'manager feishu-serve') {
+    if (command === 'agent feishu-serve') {
       const feishuGateway =
         dependencies.feishuGateway ?? feishuGatewayFactory()
-      const runtime = createServerManagerRuntime({
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway,
         bailianProvider,
-        managerProfile
+        agentProfile
       })
       const started = await runtime.startFeishuLoop()
 
@@ -472,12 +472,12 @@ export async function executeCli({
       await new Promise(() => {})
     }
 
-    if (command === 'manager intake-message') {
-      const runtime = createServerManagerRuntime({
+    if (command === 'agent intake-message') {
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
-        managerProfile
+        agentProfile
       })
       const result = await runtime.handleChannelMessage({
         channel: options.channel ?? 'manual',
@@ -500,14 +500,14 @@ export async function executeCli({
       }
     }
 
-    if (command === 'manager step-run') {
+    if (command === 'agent step-run') {
       const sessionId = requireOption(options, 'session-id')
-      const managerExecutor = createManagerExecutor({
+      const managerExecutor = createAgentExecutor({
         storageRoot,
         workspaceRoot: options['workspace-root'] ?? process.cwd(),
         fetchFn: managerFetchFn,
         executionProvider: bailianProvider,
-        managerProfile
+        agentProfile
       })
       const result = await managerExecutor.executeCurrentManagerStep({
         sessionId,
@@ -521,7 +521,7 @@ export async function executeCli({
       }
     }
 
-    if (command === 'manager loop-run') {
+    if (command === 'agent loop-run') {
       const sessionId = requireOption(options, 'session-id')
       const maxSteps = options['max-steps']
         ? Number.parseInt(options['max-steps'], 10)
@@ -531,12 +531,12 @@ export async function executeCli({
         throw new Error('Invalid --max-steps value')
       }
 
-      const managerExecutor = createManagerExecutor({
+      const managerExecutor = createAgentExecutor({
         storageRoot,
         workspaceRoot: options['workspace-root'] ?? process.cwd(),
         fetchFn: managerFetchFn,
         executionProvider: bailianProvider,
-        managerProfile
+        agentProfile
       })
       const result = await managerExecutor.runManagerLoop({
         sessionId,
@@ -671,11 +671,11 @@ export async function executeCli({
 
     if (command === 'coworker ask') {
       const sessionId = requireOption(options, 'session-id')
-      const runtime = createServerManagerRuntime({
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
-        managerProfile
+        agentProfile
       })
       const request = await runtime.requestCoworkerHelp({
         sessionId,
@@ -808,11 +808,11 @@ export async function executeCli({
     }
 
     if (command === 'coworker reply') {
-      const runtime = createServerManagerRuntime({
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway: dependencies.feishuGateway ?? null,
         bailianProvider,
-        managerProfile
+        agentProfile
       })
       const request = await runtime.resolveCoworkerRequest({
         requestId: requireOption(options, 'request-id'),

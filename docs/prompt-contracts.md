@@ -19,18 +19,18 @@
 
 当前已经接到这些路径：
 
-- `code/shell/manager/manager-planner.js`
-- `code/shell/manager/manager-executor.js`
+- `code/shell/agent/agent-planner.js`
+- `code/shell/agent/agent-executor.js`
 - `code/shell/prompts/prompt-contract.js`
 
-当前 manager planning prompt 会显式区分：
+当前 agent planning prompt 会显式区分：
 
 - `ROLE`
 - `TASK`
 - `OUTPUT CONTRACT`
 - `EXECUTION PROTOCOL`
 
-当前 manager execution prompt 和 Codex instruction 也会显式区分：
+当前 agent execution prompt 和 Codex instruction 也会显式区分：
 
 - `MANAGER STEP`
 - `OPERATOR REQUEST`

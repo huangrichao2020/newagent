@@ -10,7 +10,7 @@
 - 命令目录：`/root/newagent/code`
 - 运行数据：`/root/newagent/storage`
 - 常驻方式：`pm2`
-- 主入口：`newagent manager feishu-serve`
+- 主入口：`newagent agent feishu-serve`
 
 ## Required Environment
 
@@ -98,9 +98,9 @@ python3 -m patchright install chromium
 cd /root/newagent/code
 node ./bin/newagent.js profile show --json
 node ./bin/newagent.js channel feishu-profile --json
-node ./bin/newagent.js manager bootstrap --storage-root /root/newagent/storage --json
-node ./bin/newagent.js manager intake-message --storage-root /root/newagent/storage --text "盘一下服务器上的股票项目" --json
-node ./bin/newagent.js manager loop-run --storage-root /root/newagent/storage --session-id <session-id> --max-steps 4 --json
+node ./bin/newagent.js agent bootstrap --storage-root /root/newagent/storage --json
+node ./bin/newagent.js agent intake-message --storage-root /root/newagent/storage --text "盘一下服务器上的股票项目" --json
+node ./bin/newagent.js agent loop-run --storage-root /root/newagent/storage --session-id <session-id> --max-steps 4 --json
 curl -s http://127.0.0.1:7771/healthz
 curl -s http://127.0.0.1:7771/v1/extract \
   -H 'Content-Type: application/json' \
@@ -116,13 +116,13 @@ set -a
 source /root/.config/newagent/env.sh
 set +a
 cd /root/newagent/code
-node ./bin/newagent.js manager feishu-serve --storage-root /root/newagent/storage
+node ./bin/newagent.js agent feishu-serve --storage-root /root/newagent/storage
 ```
 
 PM2 启动：
 
 ```bash
-pm2 start /root/.config/newagent/start-manager.sh --name newagent-manager
+pm2 start /root/.config/newagent/start-agent.sh --name newagent-agent
 pm2 save
 ```
 
@@ -154,7 +154,7 @@ pm2 save
   - 计划结果会先走第二模型复核，再决定是否自动推进
   - 压缩结果会走第二模型复核，并把可复用约束写回 session memory
 - 自动回一条中文确认摘要
-- 自动推进第一版 manager loop
+- 自动推进第一版 agent loop
   - 读取项目注册表
   - 读取单个项目信息
   - 读取 PM2 进程状态

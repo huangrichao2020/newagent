@@ -6,13 +6,13 @@ import { tmpdir } from 'node:os'
 import { createProjectRegistry } from '../projects/project-registry.js'
 import { createSessionStore } from '../session/session-store.js'
 import {
-  createManagerExecutor,
+  createAgentExecutor,
   selectManagerToolForStep
-} from './manager-executor.js'
-import { createRemoteServerManagerProfile } from './remote-server-manager-profile.js'
+} from './agent-executor.js'
+import { createAgentProfile } from './agent-profile.js'
 
 async function createHarness() {
-  const root = await mkdtemp(join(tmpdir(), 'newagent-manager-executor-'))
+  const root = await mkdtemp(join(tmpdir(), 'newagent-agent-executor-'))
   const storageRoot = join(root, 'storage')
   const workspaceRoot = join(root, 'workspace')
   const uwillberichRoot = join(workspaceRoot, 'uwillberich')
@@ -58,7 +58,7 @@ async function createHarness() {
     }
   ])
 
-  const managerProfile = createRemoteServerManagerProfile({
+  const managerProfile = createAgentProfile({
     env: {}
   })
 
@@ -68,7 +68,7 @@ async function createHarness() {
     sessionStore,
     projectRegistry,
     managerProfile,
-    managerExecutor: createManagerExecutor({
+    managerExecutor: createAgentExecutor({
       storageRoot,
       workspaceRoot,
       codexCommand: '/bin/echo',
@@ -547,7 +547,7 @@ test('runManagerLoop defers legacy repair steps instead of entering a dedicated 
 
 test('executeCurrentManagerStep plans one deploy command and executes it immediately', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -631,7 +631,7 @@ test('executeCurrentManagerStep plans one deploy command and executes it immedia
 test('executeCurrentManagerStep notifies before one restart-like deploy command', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
   const notices = []
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -717,7 +717,7 @@ test('executeCurrentManagerStep notifies before one restart-like deploy command'
 
 test('executeCurrentManagerStep rejects execution cwd values outside the target project roots', async () => {
   const { sessionStore, storageRoot, workspaceRoot, managerProfile } = await createHarness()
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -795,7 +795,7 @@ test('executeCurrentManagerStep rejects execution cwd values outside the target 
 
 test('continueApprovedManagerStep executes one approved deploy command and completes the step', async () => {
   const { sessionStore, storageRoot, workspaceRoot } = await createHarness()
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',
@@ -879,7 +879,7 @@ test('continueApprovedManagerStep executes one approved deploy command and compl
 
 test('executeCurrentManagerStep rejects execution cwd values outside the target project roots', async () => {
   const { sessionStore, storageRoot, workspaceRoot, managerProfile } = await createHarness()
-  const managerExecutor = createManagerExecutor({
+  const managerExecutor = createAgentExecutor({
     storageRoot,
     workspaceRoot,
     codexCommand: '/bin/echo',

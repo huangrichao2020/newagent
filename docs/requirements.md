@@ -37,9 +37,9 @@ Primary user:
 7. As a user, I want to resume a prior session and know what happened before.
 8. As a user, I want tool execution to be auditable.
 9. As a user, I want project-management capability to know which remote projects exist and what role each project plays when the task is actually about those projects.
-10. As a user, I want the manager agent to talk to me through Feishu over a long-lived direct connection.
-11. As a user, I want the manager agent to use Bailian `codingplan` for planning and `qwen3.5-plus` for execution by default.
-12. As a user, I want the manager agent to be able to call Codex for review and repair when needed.
+10. As a user, I want the agent agent to talk to me through Feishu over a long-lived direct connection.
+11. As a user, I want the agent agent to use Bailian `codingplan` for planning and `qwen3.5-plus` for execution by default.
+12. As a user, I want the agent agent to be able to call Codex for review and repair when needed.
 
 ## Functional Requirements
 
@@ -100,8 +100,8 @@ Primary user:
 
 ### Codex Integration
 
-- The manager agent must be allowed to call Codex for workspace review.
-- The manager agent must be allowed to call Codex for repair or correction with stricter permissions.
+- The agent agent must be allowed to call Codex for workspace review.
+- The agent agent must be allowed to call Codex for repair or correction with stricter permissions.
 - Codex invocation must be auditable in the timeline.
 
 ### Memory
@@ -126,7 +126,7 @@ Primary user:
 - Recoverable after interruption.
 - Provider-agnostic at the shell boundary.
 - Easy to inspect from plain files and logs.
-- Capable of being deployed as a long-running manager process on the remote server.
+- Capable of being deployed as a long-running agent process on the remote server.
 
 ## Non-Goals For M1
 

@@ -267,12 +267,12 @@ This project is being built for one real target:
 That implies:
 
 - remote-server project inventory is first-class data
-- PM2, ports, publish roots, and health endpoints are manager-visible state
+- PM2, ports, publish roots, and health endpoints are agent-visible state
 - the shell is expected to become a long-running process after bootstrap
 
 ## Reviewer Constraint
 
-After the manager is online, it should be able to call Codex in two modes:
+After the agent is online, it should be able to call Codex in two modes:
 
 - review mode
 - repair mode
