@@ -1,4 +1,4 @@
-import { createAgentProfile } from '../manager/agent-profile.js'
+import { createAgentProfile } from '../agent/agent-profile.js'
 import { createModelRouter } from './model-router.js'
 
 function normalizeBaseUrl(baseUrl) {
