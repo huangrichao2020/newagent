@@ -710,7 +710,8 @@ function buildFeishuReplyCard({
   }
 }
 
-function buildFeishuReplyCardElement({
+function buildFeishuReplyCardElement(sections, template, title) {
+  return {
     config: {
       wide_screen_mode: true,
       enable_forward: true
