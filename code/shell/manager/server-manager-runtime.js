@@ -56,12 +56,11 @@ const DEFAULT_FEISHU_OPERATOR_PROFILE = Object.freeze({
 
 const FEISHU_STATUS_REACTIONS = Object.freeze({
   received: 'SMILE',
-  queued: 'HOURGLASS',
-  processing: 'EYES',
-  waiting_approval: 'RAISED_HAND',
-  completed: 'WHITE_CHECK_MARK',
-  failed: 'WARNING',
-  stopped: 'NO_ENTRY_SIGN'
+  queued: 'SMILE',
+  processing: 'SMILE',
+  completed: 'SMILE',
+  failed: 'SMILE',
+  stopped: 'SMILE'
 })
 
 class FeishuRunStoppedError extends Error {
@@ -591,8 +590,6 @@ function buildFeishuProgressText({
   } else if (stage === 'executing' && latestRun) {
     lines.push(`正在推进第 ${totalRuns} 步。`)
     lines.push(compactMultilineText(latestRun.summary ?? latestRun.report_text ?? ''))
-  } else if (stage === 'waiting_approval') {
-    lines.push('当前已暂停，等待你的审批。')
   }
 
   return lines
@@ -617,10 +614,6 @@ function buildFeishuFinalReplyText({
     lines.push(compactMultilineText(planning.plan.operator_reply))
   }
 
-  if (execution?.status === 'waiting_approval') {
-    lines.push('下一步涉及高风险操作，当前等待你的审批。')
-  }
-
   if (execution?.report_text) {
     lines.push(compactMultilineText(execution.report_text))
   }
@@ -641,17 +634,8 @@ function buildFeishuReplyCard({
 }) {
   const planSteps = summarizePlanStepsForReply(planning?.plan?.steps ?? [])
   const executionRuns = summarizeExecutionRunsForReply(execution?.runs ?? [])
-  const waitingApproval = execution?.status === 'waiting_approval'
-  const title = waitingApproval
-    ? '等待审批'
-    : error
-      ? '处理受阻'
-      : '已完成'
-  const template = waitingApproval
-    ? 'orange'
-    : error
-      ? 'red'
-      : 'green'
+  const title = error ? '处理受阻' : '已完成'
+  const template = error ? 'red' : 'green'
   const sections = []
 
   if (planning?.plan?.operator_reply) {
@@ -670,19 +654,22 @@ function buildFeishuReplyCard({
     sections.push(`**阶段汇报**\n${execution.report_text}`)
   }
 
-  if (waitingApproval) {
-    sections.push('**等待你确认**\n- 下一步涉及高风险操作，请先回复确认。')
+  if (feedbackAck && operatorProfile.response_mode !== 'fast') {
+    sections.push(`**已记录偏好**\n${feedbackAck}`)
   }
 
   if (error) {
-    sections.push(`**异常**\n- ${error}`)
-  }
-
-  if (feedbackAck && operatorProfile.response_mode !== 'fast') {
-    sections.push(`**已记住**\n- ${feedbackAck}`)
+    sections.push(`**错误信息**\n${error}`)
   }
 
   return {
+    template,
+    title,
+    content: sections.join('\n\n')
+  }
+}
+
+function buildFeishuReplyCardElement({
     config: {
       wide_screen_mode: true,
       enable_forward: true
@@ -936,10 +923,6 @@ function isNegativeConfirmationMessage(message) {
   )
 }
 
-function findPendingApproval(snapshot) {
-  return snapshot?.approvals?.find((approval) => approval.status === 'pending') ?? null
-}
-
 function buildFeishuLongRunningFeedbackText(runState, nowTimestamp) {
   const lines = [
     `这轮已经处理了 ${formatElapsedDuration(nowTimestamp - runState.started_at_ms)}，我还在继续推进。`
@@ -951,8 +934,6 @@ function buildFeishuLongRunningFeedbackText(runState, nowTimestamp) {
     lines.push(`当前进度：${compactMultilineText(runState.latest_run.summary)}`)
   } else if (runState.phase === 'planned' && runState.planning?.plan?.steps?.length) {
     lines.push(`计划已拆成 ${runState.planning.plan.steps.length} 步，正在进入执行。`)
-  } else if (runState.phase === 'waiting_approval') {
-    lines.push('当前停在需要外部审批的步骤。')
   } else {
     lines.push('当前还没收口，但没有卡死。')
   }
@@ -2360,36 +2341,6 @@ export function createServerManagerRuntime({
     if (existingState?.session_id) {
       try {
         const currentSnapshot = await sessionStore.loadSession(existingState.session_id)
-        const pendingApproval = findPendingApproval(currentSnapshot)
-
-        if (pendingApproval) {
-          await sessionStore.appendTimelineEvent(existingState.session_id, {
-            kind: 'user_message_added',
-            actor: 'user',
-            payload: {
-              content: userRequest,
-              ...(userMessageMeta ?? {})
-            },
-            at: currentAt
-          })
-          const preserved = await sessionStore.loadSession(existingState.session_id)
-          const nextState = await writeChannelState(FEISHU_UNIFIED_CHANNEL_KEY, {
-            ...existingState,
-            channel: 'feishu',
-            session_id: preserved.session.id,
-            updated_at: currentAt,
-            last_message_at: currentAt,
-            operator_profile: normalizeFeishuOperatorProfile(existingState?.operator_profile),
-            version: 1
-          })
-
-          return {
-            kind: 'approval_pending',
-            snapshot: preserved,
-            channel_state: nextState,
-            pending_approval: findPendingApproval(preserved)
-          }
-        }
 
         const continued = await sessionStore.startNextTurn(existingState.session_id, {
           title,
@@ -4896,152 +4847,6 @@ export function createServerManagerRuntime({
             replyText: directReply.text,
             relation: attentionContext.relation
           })
-        } else if (activeTurn.kind === 'approval_pending') {
-          const pendingApproval = activeTurn.pending_approval ?? findPendingApproval(currentSnapshot)
-          const approvalMessage = buildOperatorRequest(message)
-          const parsedCommand = parseFeishuControlCommand(message)
-          const operatorApproved = isPositiveConfirmationMessage(message)
-          const operatorDenied = parsedCommand?.command === 'stop'
-            || isNegativeConfirmationMessage(message)
-
-          if (pendingApproval && operatorDenied) {
-            const resolved = await sessionStore.resolveApproval(
-              sessionId,
-              pendingApproval.id,
-              'rejected',
-              {
-                resolvedBy: 'operator:feishu',
-                resolutionNote: approvalMessage || null
-              }
-            )
-
-            execution = {
-              status: 'blocked',
-              runs: [],
-              approvals: resolved.approvals,
-              session: resolved.session,
-              task: resolved.task,
-              plan_steps: resolved.plan_steps
-            }
-            ackText = '收到，这轮先停在这里。当前待审批步骤已取消。'
-            await emitHook({
-              name: 'manager.approval.rejected',
-              sessionId,
-              actor: 'manager:runtime',
-              payload: {
-                tool_name: pendingApproval.tool_name
-              }
-            })
-          } else if (pendingApproval && operatorApproved) {
-            updateFeishuRunProgressState(feishuRunState, {
-              phase: 'executing'
-            })
-
-            const continued = await managerExecutor.continueApprovedManagerStep({
-              sessionId,
-              approvalId: pendingApproval.id,
-              currentInput: approvalMessage,
-              resolvedBy: 'operator:feishu',
-              resolutionNote: approvalMessage || null,
-              abortSignal: feishuRunState?.abort_controller?.signal ?? null
-            })
-            let continuedRuns = [continued]
-            let latestExecution = {
-              status: continued.status,
-              runs: continuedRuns,
-              report_text: continued.report_text ?? null,
-              approvals: continued.execution.approvals ?? []
-            }
-
-            if (continued.status === 'planned') {
-              const tail = await managerExecutor.runManagerLoop({
-                sessionId,
-                currentInput: approvalMessage,
-                maxSteps: 4,
-                abortSignal: feishuRunState?.abort_controller?.signal ?? null,
-                shouldStop: () => feishuRunState?.stop_requested === true
-              })
-              continuedRuns = [...continuedRuns, ...tail.runs]
-              latestExecution = {
-                ...tail,
-                runs: continuedRuns
-              }
-            } else {
-              const latestSnapshot = await sessionStore.loadSession(sessionId)
-              latestExecution = {
-                ...latestExecution,
-                session: latestSnapshot.session,
-                task: latestSnapshot.task,
-                plan_steps: latestSnapshot.plan_steps,
-                approvals: latestSnapshot.approvals
-              }
-            }
-
-            execution = latestExecution
-
-            if (execution?.status === 'stopped') {
-              throw new FeishuRunStoppedError(
-                feishuRunState?.stop_stage ?? 'manager_loop_stopped'
-              )
-            }
-
-            ackText = '收到，我继续推进。'
-
-            const completedLabels = summarizeExecutionRunsForReply(execution.runs ?? [])
-
-            if (completedLabels.length > 0) {
-              ackText = `${ackText}\n已推进：${completedLabels.join('\n')}`
-            }
-
-            if (execution.report_text) {
-              ackText = `${ackText}\n${execution.report_text}`
-            }
-
-            if (execution.status === 'waiting_approval') {
-              const nextPendingApproval = execution.approvals?.find(
-                (approval) => approval.status === 'pending'
-              ) ?? null
-
-              ackText = nextPendingApproval
-                ? `${ackText}\n下一步仍涉及高风险操作，当前等待审批：${nextPendingApproval.tool_name}`
-                : `${ackText}\n下一步仍涉及高风险操作，当前等待审批。`
-            }
-
-            await emitHook({
-              name: 'manager.approval.approved',
-              sessionId,
-              actor: 'manager:runtime',
-              payload: {
-                tool_name: pendingApproval.tool_name
-              }
-            })
-          } else {
-            updateFeishuRunProgressState(feishuRunState, {
-              phase: 'waiting_approval'
-            })
-            execution = {
-              status: 'waiting_approval',
-              runs: [],
-              approvals: currentSnapshot.approvals
-            }
-            ackText = `已收到，继续沿用总管会话 ${sessionId}。`
-
-            if (feedbackAck) {
-              ackText = `${ackText}\n${feedbackAck}`
-            }
-
-            ackText = pendingApproval
-              ? `${ackText}\n当前还有待审批步骤：${pendingApproval.tool_name}。这条补充不会清空当前计划和审批，等你审批后再继续推进。`
-              : `${ackText}\n当前仍在等待审批。这条补充不会清空当前计划和审批。`
-            await emitHook({
-              name: 'manager.approval.still_waiting',
-              sessionId,
-              actor: 'manager:runtime',
-              payload: {
-                tool_name: pendingApproval?.tool_name ?? null
-              }
-            })
-          }
         } else if (autoPlan && bailianProvider) {
           updateFeishuRunProgressState(feishuRunState, {
             phase: 'planning'

@@ -1412,28 +1412,23 @@ function buildManagerReportText(snapshot) {
   const lines = []
   const completedSteps = summarizeCompletedManagerSteps(snapshot)
   const executionHighlights = summarizeRecentManagerExecution(snapshot)
-  const pendingApprovals = snapshot.approvals.filter(
-    (approval) => approval.status === 'pending'
-  )
   const nextStep = snapshot.plan_steps.find((step) => step.status === 'ready')
 
-  lines.push('总管阶段汇报：')
+  lines.push('阶段汇报：')
 
   if (snapshot.session.summary) {
     lines.push(`当前摘要：${snapshot.session.summary}`)
   }
 
   if (completedSteps.length > 0) {
-    lines.push(`已完成步骤：${completedSteps.join('；')}`)
+    lines.push(`已完成：${completedSteps.join('；')}`)
   }
 
   if (executionHighlights.length > 0) {
     lines.push(`执行结论：${executionHighlights.join('；')}`)
   }
 
-  if (pendingApprovals.length > 0) {
-    lines.push(`当前等待审批：${pendingApprovals.map((approval) => approval.tool_name).join('、')}`)
-  } else if (nextStep) {
+  if (nextStep) {
     lines.push(`下一步：${nextStep.title}`)
   } else {
     lines.push('当前计划已执行完成。')
@@ -1706,22 +1701,6 @@ export function createManagerExecutor({
       }
     }
 
-    if (execution.status === 'waiting_approval') {
-      const approval = execution.approvals?.find((item) => item.status === 'pending') ?? null
-
-      return {
-        status: execution.status,
-        selection,
-        summary: approval
-          ? [
-              `当前步骤等待审批：${approval.tool_name}`,
-              selection.tool_input?.command ?? null
-            ].filter(Boolean).join('\n')
-          : '当前步骤等待审批',
-        execution
-      }
-    }
-
     return {
       status: execution.status,
       selection,
@@ -1795,85 +1774,7 @@ export function createManagerExecutor({
     return finalizeLoop()
   }
 
-  async function continueApprovedManagerStep({
-    sessionId,
-    approvalId,
-    currentInput = null,
-    resolvedBy = 'user',
-    resolutionNote = null,
-    skillRefs = [],
-    abortSignal = null
-  }) {
-    const continued = await stepExecutor.continueApprovedStep({
-      sessionId,
-      approvalId,
-      currentInput,
-      resolvedBy,
-      resolutionNote,
-      skillRefs,
-      abortSignal
-    })
-
-    if (
-      continued.execution.status === 'planned'
-      || continued.execution.status === 'completed'
-    ) {
-      const summary = summarizeSelectionOutput({
-        toolName: continued.approval.tool_name,
-        output: continued.execution.tool_result.output
-      })
-
-      await sessionStore.appendTimelineEvent(sessionId, {
-        kind: 'manager_step_executed',
-        actor: 'manager:executor',
-        payload: {
-          tool_name: continued.approval.tool_name,
-          summary,
-          approval_id: continued.approval.id
-        }
-      })
-
-      return {
-        status: continued.execution.status,
-        approval: continued.approval,
-        summary,
-        execution: continued.execution
-      }
-    }
-
-    if (continued.execution.status === 'waiting_approval') {
-      return {
-        status: 'waiting_approval',
-        approval: continued.approval,
-        summary: `当前步骤等待审批：${continued.approval.tool_name}`,
-        execution: continued.execution
-      }
-    }
-
-    return {
-      status: continued.execution.status,
-      approval: continued.approval,
-      summary: continued.execution.tool_result?.error?.message ?? null,
-      execution: continued.execution
-    }
-  }
-
-  async function runSafeInspectLoop({
-    sessionId,
-    currentInput = null,
-    maxSteps = 3,
-    skillRefs = []
-  }) {
-    return runManagerLoop({
-      sessionId,
-      currentInput,
-      maxSteps,
-      skillRefs
-    })
-  }
-
   return {
-    continueApprovedManagerStep,
     executeCurrentManagerStep,
     runManagerLoop,
     runSafeInspectLoop
