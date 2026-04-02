@@ -40,8 +40,8 @@ const DEFAULT_FEISHU_EXTENSION_RESPONSE_TIMEOUT_MS = 10 * 1000
 const DEFAULT_FEISHU_FINAL_TIMEOUT_MS = 6 * 60 * 1000
 const DEFAULT_BACKGROUND_PRECOMPUTE_INTERVAL_MS = 3 * 60 * 1000
 const DEFAULT_BACKGROUND_PRECOMPUTE_TRIGGER_DELAY_MS = 150
-const DEFAULT_CODEX_COWORKER_TARGET = 'codex_mac_local'
-const DEFAULT_CODEX_COWORKER_LOCATION = 'mac_local_codex'
+const DEFAULT_QWEN_COWORKER_TARGET = 'qwen_mac_local'
+const DEFAULT_QWEN_COWORKER_LOCATION = 'mac_local_qwen'
 const FEISHU_COMPACTION_LOCK_SUFFIX = '.compaction.lock'
 const BACKGROUND_COMPACTION_RECENT_ACTIVITY_MS = 60 * 1000
 const MAX_TRANSCRIPT_LINES = 10
@@ -1667,7 +1667,7 @@ function buildFeishuSelfReflectionReply({
   preparedContext = null
 }) {
   const askAboutLocation = /(阿里云|服务器|跑在|跑在哪|部署位置)/u.test(request)
-  const askAboutCodex = /(codex|mac|电脑|同事)/iu.test(request)
+  const askAboutQwen = /(codex|mac|电脑|同事)/iu.test(request)
   const askAboutChanges = /(改造|赋能|新特性|升级|增强|改了什么|做了什么|哪些|变得更好|现在会什么|能力)/u.test(request)
   const lines = ['记得。']
 
@@ -1675,11 +1675,11 @@ function buildFeishuSelfReflectionReply({
     lines.push('你一直把我放在阿里云服务器上跑，主交互通道是飞书长连接。')
   }
 
-  if (askAboutCodex) {
-    lines.push('你这台 Mac 上的 Codex 一直在帮我做设计、修正和加能力，它就是我最特殊的外部同事。')
+  if (askAboutQwen) {
+    lines.push('你这台 Mac 上的 Qwen 一直在帮我做设计、修正和加能力，它就是我最特殊的外部同事。')
   }
 
-  if (askAboutChanges || (!askAboutLocation && !askAboutCodex)) {
+  if (askAboutChanges || (!askAboutLocation && !askAboutQwen)) {
     lines.push('')
     lines.push('### 我现在能明确确认的升级')
 
@@ -2248,13 +2248,13 @@ export function createAgentRuntime({
   async function requestCoworkerHelp({
     sessionId,
     source = 'newagent-agent',
-    target = DEFAULT_CODEX_COWORKER_TARGET,
+    target = DEFAULT_QWEN_COWORKER_TARGET,
     title = null,
     question,
     context = null,
     urgency = 'normal',
     tags = [],
-    location = DEFAULT_CODEX_COWORKER_LOCATION
+    location = DEFAULT_QWEN_COWORKER_LOCATION
   }) {
     if (!sessionId) {
       throw new Error('Missing required field: sessionId')
@@ -2266,7 +2266,7 @@ export function createAgentRuntime({
       source,
       target,
       authority: agentProfile.channels?.coworker?.authority ?? 'advisory_only',
-      title: cleanText(title) || `Need Codex help for ${snapshot.task.title}`,
+      title: cleanText(title) || `Need Qwen help for ${snapshot.task.title}`,
       question,
       context,
       urgency,
@@ -2316,9 +2316,9 @@ export function createAgentRuntime({
   async function resolveCoworkerRequest({
     requestId,
     answer,
-    resolvedBy = DEFAULT_CODEX_COWORKER_TARGET,
+    resolvedBy = DEFAULT_QWEN_COWORKER_TARGET,
     resolution = 'answered',
-    location = DEFAULT_CODEX_COWORKER_LOCATION,
+    location = DEFAULT_QWEN_COWORKER_LOCATION,
     writeMemory = true
   }) {
     if (!requestId) {
@@ -2335,7 +2335,7 @@ export function createAgentRuntime({
     if (resolved.session_id) {
       await sessionStore.appendTimelineEvent(resolved.session_id, {
         kind: 'coworker_request_resolved',
-        actor: 'coworker:codex',
+        actor: 'coworker:qwen',
         payload: {
           request_id: resolved.id,
           target: resolved.target,
@@ -2350,7 +2350,7 @@ export function createAgentRuntime({
           sessionId: resolved.session_id,
           scope: 'session',
           kind: 'decision',
-          content: `Mac-local Codex replied: ${resolved.answer}`,
+          content: `Mac-local Qwen replied: ${resolved.answer}`,
           tags: ['coworker_reply', 'codex', 'ssh-channel']
         })
       }
@@ -2359,7 +2359,7 @@ export function createAgentRuntime({
         name: 'coworker.request.resolved',
         sessionId: resolved.session_id,
         channel: resolved.channel,
-        actor: 'coworker:codex',
+        actor: 'coworker:qwen',
         payload: {
           request_id: resolved.id,
           target: resolved.target,

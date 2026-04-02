@@ -87,8 +87,8 @@ export function createAgentProfile({
         type: 'ssh-channel',
         connection_mode: 'duplex_long_poll',
         remote_relay_required: false,
-        target: 'codex_mac_local',
-        location: 'mac_local_codex',
+        target: 'qwen_mac_local',
+        location: 'mac_local_qwen',
         authority: 'advisory_only',
         auto_execute_allowed: false
       }

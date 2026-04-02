@@ -653,7 +653,7 @@ function assertExecutionCwdAllowed({
   }
 }
 
-function buildCodexInstruction({
+function buildQwenInstruction({
   mode,
   step,
   project,
@@ -1000,16 +1000,16 @@ function summarizeSelectionOutput({ toolName, output }) {
     ].join('\n')
   }
 
-  if (toolName === 'codex_review_workspace') {
+  if (toolName === 'qwen_review_workspace') {
     return [
-      `已在 ${output.cwd} 执行 Codex review`,
+      `已在 ${output.cwd} 执行 Qwen review`,
       output.stdout?.trim() ?? ''
     ].filter(Boolean).join('\n')
   }
 
-  if (toolName === 'codex_repair_workspace') {
+  if (toolName === 'qwen_repair_workspace') {
     return [
-      `已在 ${output.cwd} 执行 Codex repair`,
+      `已在 ${output.cwd} 执行 Qwen repair`,
       output.stdout?.trim() ?? ''
     ].filter(Boolean).join('\n')
   }
@@ -1061,10 +1061,10 @@ export function selectAgentToolForStep({
   }
 
   if (normalizedKind === 'review') {
-    if (!agentProfile.codex_integration.allow_review) {
+    if (!agentProfile.qwen_integration.allow_review) {
       return {
         supported: false,
-        reason: 'Codex review is disabled for this environment'
+        reason: 'Qwen review is disabled for this environment'
       }
     }
 
@@ -1072,11 +1072,11 @@ export function selectAgentToolForStep({
       supported: true,
       action: 'tool',
       project,
-      tool_name: agentProfile.codex_integration.review_tool_name,
+      tool_name: agentProfile.qwen_integration.review_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         json: true,
-        instruction: buildCodexInstruction({
+        instruction: buildQwenInstruction({
           mode: 'review',
           step,
           project,
@@ -1088,10 +1088,10 @@ export function selectAgentToolForStep({
   }
 
   if (normalizedKind === 'repair') {
-    if (!agentProfile.codex_integration.allow_repair) {
+    if (!agentProfile.qwen_integration.allow_repair) {
       return {
         supported: false,
-        reason: 'Codex repair is disabled for this environment'
+        reason: 'Qwen repair is disabled for this environment'
       }
     }
 
@@ -1099,11 +1099,11 @@ export function selectAgentToolForStep({
       supported: true,
       action: 'tool',
       project,
-      tool_name: agentProfile.codex_integration.repair_tool_name,
+      tool_name: agentProfile.qwen_integration.repair_tool_name,
       tool_input: {
         cwd: resolveProjectWorkspace(project, workspaceRoot),
         full_auto: true,
-        instruction: buildCodexInstruction({
+        instruction: buildQwenInstruction({
           mode: 'repair',
           step,
           project,
@@ -1440,7 +1440,7 @@ function buildManagerReportText(snapshot) {
 export function createAgentExecutor({
   storageRoot,
   workspaceRoot,
-  codexCommand = 'codex',
+  qwenCommand = 'qwen',
   fetchFn = globalThis.fetch,
   executionProvider = null,
   agentProfile = createAgentProfile()
@@ -1450,7 +1450,7 @@ export function createAgentExecutor({
   const stepExecutor = createStepExecutor({
     storageRoot,
     workspaceRoot,
-    codexCommand,
+    qwenCommand,
       fetchFn
   })
 

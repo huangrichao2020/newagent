@@ -402,10 +402,10 @@ test('bootstrapServerBaseline seeds the six known aliyun projects', async () => 
   assert.equal(projects.length, 6)
 })
 
-test('requestCoworkerHelp and resolveCoworkerRequest persist a Mac-local Codex exchange', async () => {
+test('requestCoworkerHelp and resolveCoworkerRequest persist a Mac-local Qwen exchange', async () => {
   const { runtime, sessionStore, memoryStore, hookBus } = await createHarness()
   const created = await sessionStore.createSession({
-    title: 'Need one Codex exchange',
+    title: 'Need one Qwen exchange',
     projectKey: 'newagent',
     userRequest: 'Create one coworker request'
   })
@@ -413,24 +413,24 @@ test('requestCoworkerHelp and resolveCoworkerRequest persist a Mac-local Codex e
   const request = await runtime.requestCoworkerHelp({
     sessionId: created.session.id,
     question: '请确认 ssh-channel 先走长轮询是不是合理。',
-    context: '目标是先联系本机 Codex。'
+    context: '目标是先联系本机 Qwen。'
   })
   const resolved = await runtime.resolveCoworkerRequest({
     requestId: request.id,
     answer: '合理，先别做真双向 socket。',
-    resolvedBy: 'codex_mac_local'
+    resolvedBy: 'qwen_mac_local'
   })
   const snapshot = await sessionStore.loadSession(created.session.id)
   const memory = await memoryStore.searchMemoryEntries({
     sessionId: created.session.id,
     scope: 'session',
-    query: 'Mac-local Codex replied'
+    query: 'Mac-local Qwen replied'
   })
   const hooks = await hookBus.listEvents({
     sessionId: created.session.id
   })
 
-  assert.equal(request.target, 'codex_mac_local')
+  assert.equal(request.target, 'qwen_mac_local')
   assert.equal(resolved.status, 'resolved')
   assert.ok(snapshot.timeline.some((event) => event.kind === 'coworker_request_created'))
   assert.ok(snapshot.timeline.some((event) => event.kind === 'coworker_request_resolved'))
@@ -526,7 +526,7 @@ test('handleChannelMessage answers a self-reflection question directly without t
       message_id: 'om_self_1',
       chat_id: 'oc_self',
       sender_open_id: 'ou_self',
-      text: '小云，你跑在一台阿里云服务器上你知道的吧。我 mac 电脑上的 Codex 一直在帮助你变得更好。我刚刚和它一起给你做了很多新特性的改造和赋能，你再想想是哪些？'
+      text: '小云，你跑在一台阿里云服务器上你知道的吧。我 mac 电脑上的 Qwen 一直在帮助你变得更好。我刚刚和它一起给你做了很多新特性的改造和赋能，你再想想是哪些？'
     },
     autoExecuteSafeInspect: false
   })
@@ -536,7 +536,7 @@ test('handleChannelMessage answers a self-reflection question directly without t
   assert.equal(result.execution, null)
   assert.equal(result.direct_reply.source, 'self_reflection')
   assert.match(result.direct_reply.text, /阿里云服务器/)
-  assert.match(result.direct_reply.text, /Mac 上的 Codex/)
+  assert.match(result.direct_reply.text, /Mac 上的 Qwen/)
   assert.match(result.direct_reply.text, /飞书回复更重排版/)
   assert.equal(
     replies.some((entry) => entry.method === 'replyInteractiveCard'),

@@ -71,7 +71,7 @@ async function createHarness() {
     agentExecutor: createAgentExecutor({
       storageRoot,
       workspaceRoot,
-      codexCommand: '/bin/echo',
+      qwenCommand: '/bin/echo',
       fetchFn: async (url) => ({
         ok: true,
         status: 200,
