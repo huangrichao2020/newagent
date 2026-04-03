@@ -16,6 +16,7 @@ import {
 } from '../channels/feishu/feishu-gateway.js'
 import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
 import { createDynamicToolRegistry } from './dynamic-tool-registry.js'
+import { validateToolSelection } from './tool-usage-grammar.js'
 
 const execFileAsync = promisify(execFile)
 const TOOL_CATEGORIES = [
@@ -3130,6 +3131,21 @@ export function createToolRuntime({
     input = {},
     abortSignal = null
   }) {
+    // Tool Usage Grammar 校验
+    const validation = validateToolSelection(toolName, input)
+    if (!validation.valid && validation.violations.length > 0) {
+      return {
+        status: 'blocked',
+        tool_name: toolName,
+        violations: validation.violations,
+        suggestions: validation.violations.map(v => v.suggestion),
+        error: {
+          message: `Tool usage violation: ${validation.violations.map(v => v.rule).join(', ')}`,
+          code: 'tool_usage_violation'
+        }
+      }
+    }
+
     const spec = await resolveToolSpec(toolName)
 
     if (!spec) {

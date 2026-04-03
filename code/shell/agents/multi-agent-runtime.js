@@ -1,6 +1,6 @@
 /**
  * 多 Agent 运行时
- * 统一管理 6 个专用 agent
+ * 统一管理 6 个专用 agent + Verification
  */
 
 import { createMessageMerger } from './message-merger.js'
@@ -11,6 +11,7 @@ import { createExecutionAgent } from './execution-agent.js'
 import { createValidationAgent } from './validation-agent.js'
 import { createReviewAgent } from './review-agent.js'
 import { createOpsAgent } from './ops-agent.js'
+import { createVerificationAgent } from './verification-agent.js'
 
 export function createMultiAgentRuntime({
   storageRoot,
@@ -56,10 +57,16 @@ export function createMultiAgentRuntime({
     serverConfig
   })
 
+  const verificationAgent = createVerificationAgent({
+    bailianProvider,
+    toolRuntime
+  })
+
   const frontAgent = createFrontAgent({
     dispatcher,
     messageMerger,
-    bailianProvider
+    bailianProvider,
+    verificationAgent
   })
 
   const agents = {
@@ -68,7 +75,8 @@ export function createMultiAgentRuntime({
     [AGENT_TYPES.EXECUTION]: executionAgent,
     [AGENT_TYPES.VALIDATION]: validationAgent,
     [AGENT_TYPES.REVIEW]: reviewAgent,
-    [AGENT_TYPES.OPS]: opsAgent
+    [AGENT_TYPES.OPS]: opsAgent,
+    [AGENT_TYPES.VERIFICATION]: verificationAgent
   }
 
   const messageQueue = []

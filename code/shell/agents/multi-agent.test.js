@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createMessageMerger } from './message-merger.js'
-import { createDispatcher, AGENT_TYPES } from './dispatcher.js'
+import { createDispatcher, AGENT_TYPES, classifyTask } from './dispatcher.js'
 import { createFrontAgent } from './front-agent.js'
 
 test('MessageMerger - 应该合并同一件事的多轮消息', () => {
@@ -46,55 +46,36 @@ test('MessageMerger - 应该识别问题回复', () => {
 test('Dispatcher - 应该正确分类运维任务', async () => {
   const dispatcher = createDispatcher()
 
-  const result = await dispatcher.dispatch({
-    text: '检查一下 pm2 服务状态'
-  })
+  // 直接测试 classifyTask 函数
+  const result = classifyTask({ text: '检查一下 pm2 服务状态' })
 
-  assert.equal(result.classification.agent, AGENT_TYPES.OPS)
+  assert.equal(result.agent, AGENT_TYPES.OPS)
 })
 
 test('Dispatcher - 应该正确分类验证任务', async () => {
-  const dispatcher = createDispatcher()
+  // 直接测试 classifyTask 函数
+  const result = classifyTask({ text: '验证一下部署结果是否正确' })
 
-  const result = await dispatcher.dispatch({
-    text: '验证一下部署结果是否正确'
-  })
-
-  // 验证任务包含"验证"关键词
-  assert.equal(result.classification.agent, AGENT_TYPES.VALIDATION)
+  // 验证任务现在分类到 VERIFICATION (激进模式)
+  assert.equal(result.agent, AGENT_TYPES.VERIFICATION)
 })
 
 test('Dispatcher - 应该正确分类复盘任务', async () => {
-  const dispatcher = createDispatcher()
+  const result = classifyTask({ text: '复盘总结这次任务' })
 
-  const result = await dispatcher.dispatch({
-    text: '复盘总结这次任务'
-  })
-
-  // 复盘任务包含"复盘"关键词
-  assert.equal(result.classification.agent, AGENT_TYPES.REVIEW)
+  assert.equal(result.agent, AGENT_TYPES.REVIEW)
 })
 
 test('Dispatcher - 应该正确分类规划任务', async () => {
-  const dispatcher = createDispatcher()
+  const result = classifyTask({ text: '规划项目的开发步骤' })
 
-  const result = await dispatcher.dispatch({
-    text: '规划项目的开发步骤'
-  })
-
-  // 规划任务包含"规划"关键词
-  assert.equal(result.classification.agent, AGENT_TYPES.PLANNING)
+  assert.equal(result.agent, AGENT_TYPES.PLANNING)
 })
 
 test('Dispatcher - 应该正确分类执行任务', async () => {
-  const dispatcher = createDispatcher()
+  const result = classifyTask({ text: '执行创建文档操作' })
 
-  const result = await dispatcher.dispatch({
-    text: '执行创建文档操作'
-  })
-
-  // 执行任务包含"执行"或"创建"关键词
-  assert.equal(result.classification.agent, AGENT_TYPES.EXECUTION)
+  assert.equal(result.agent, AGENT_TYPES.EXECUTION)
 })
 
 test('FrontAgent - 应该创建新会话', async () => {
