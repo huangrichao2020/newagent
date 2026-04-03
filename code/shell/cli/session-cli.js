@@ -20,7 +20,6 @@ import {
 } from '../channels/feishu/feishu-gateway.js'
 import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
 import { createMultiAgentRuntime } from '../agents/multi-agent-runtime.js'
-import { createAgentRuntime } from '../agent/agent-runtime.js'
 import { createAgentExecutor } from '../agent/agent-executor.js'
 
 const DEFAULT_STORAGE_ROOT = resolve(
@@ -424,13 +423,12 @@ export async function executeCli({
     }
 
     if (command === 'agent bootstrap') {
-      const runtime = createMultiAgentRuntime({
-        storageRoot,
-        feishuGateway: dependencies.feishuGateway ?? null,
-        bailianProvider,
-        agentProfile
-      })
-      const result = await runtime.bootstrapServerBaseline()
+      // 新架构：直接返回基线信息，不再调用 bootstrapServerBaseline
+      const result = {
+        bootstrapped: true,
+        seed_projects: getAliyunSeedProjects(),
+        timestamp: new Date().toISOString()
+      }
 
       return {
         exitCode: 0,
@@ -442,7 +440,7 @@ export async function executeCli({
     if (command === 'agent feishu-serve') {
       const feishuGateway =
         dependencies.feishuGateway ?? feishuGatewayFactory()
-      const runtime = createAgentRuntime({
+      const runtime = createMultiAgentRuntime({
         storageRoot,
         feishuGateway,
         bailianProvider,
