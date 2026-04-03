@@ -20,6 +20,7 @@ import {
 } from '../channels/feishu/feishu-gateway.js'
 import { createFeishuUserAuthManager } from '../channels/feishu/feishu-user-auth.js'
 import { createMultiAgentRuntime } from '../agents/multi-agent-runtime.js'
+import { createAgentRuntime } from '../agent/agent-runtime.js'
 import { createAgentExecutor } from '../agent/agent-executor.js'
 
 const DEFAULT_STORAGE_ROOT = resolve(
@@ -441,7 +442,7 @@ export async function executeCli({
     if (command === 'agent feishu-serve') {
       const feishuGateway =
         dependencies.feishuGateway ?? feishuGatewayFactory()
-      const runtime = createMultiAgentRuntime({
+      const runtime = createAgentRuntime({
         storageRoot,
         feishuGateway,
         bailianProvider,
